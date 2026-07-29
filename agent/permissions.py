@@ -36,37 +36,57 @@ ROLE_PERMISSIONS = {
 
 
 def get_user_by_phone(phone: str) -> dict | None:
+    import re
+    import logging
+    logger = logging.getLogger("webhook")
+
     # Strip @lid or @c.us suffixes
     clean_phone = phone.replace("@lid", "").replace("@c.us", "")
+    digits_only = re.sub(r"[^0-9]", "", clean_phone)
 
-    # Try exact match first
+    logger.info(f"[USER_LOOKUP] Input: phone={phone}, clean={clean_phone}, digits={digits_only}")
+
+    # 1. Exact match (clean)
     user = get_collection("users").find_one(
         {"mobileNumber": clean_phone, "isActive": True, "isDeleted": False},
         {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
     )
     if user:
+        logger.info(f"[USER_LOOKUP] Found by exact match: {clean_phone}")
         return user
 
-    # Try with @lid suffix (WhatsApp LID format)
-    user = get_collection("users").find_one(
-        {"mobileNumber": phone, "isActive": True, "isDeleted": False},
-        {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
-    )
-    if user:
-        return user
-
-    # Try regex match (e.g., user stored as "+919876543210" or "91-9876543210")
-    import re
-    digits_only = re.sub(r"[^0-9]", "", clean_phone)
-    if len(digits_only) >= 10:
-        # Match last 10 digits to handle country code variations
+    # 2. Exact match (digits only)
+    if digits_only != clean_phone:
         user = get_collection("users").find_one(
-            {"mobileNumber": {"$regex": digits_only[-10:] + "$"}, "isActive": True, "isDeleted": False},
+            {"mobileNumber": digits_only, "isActive": True, "isDeleted": False},
             {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
         )
         if user:
+            logger.info(f"[USER_LOOKUP] Found by digits match: {digits_only}")
             return user
 
+    # 3. Match with country code variations (last 10 digits)
+    if len(digits_only) >= 10:
+        last10 = digits_only[-10:]
+        user = get_collection("users").find_one(
+            {"mobileNumber": {"$regex": last10 + "$"}, "isActive": True, "isDeleted": False},
+            {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
+        )
+        if user:
+            logger.info(f"[USER_LOOKUP] Found by last-10 regex: {last10}")
+            return user
+
+    # 4. Debug: show what's actually in DB for this phone pattern
+    if len(digits_only) >= 10:
+        last10 = digits_only[-10:]
+        sample = get_collection("users").find(
+            {"mobileNumber": {"$regex": last10}},
+            {"_id": 0, "mobileNumber": 1, "isActive": 1, "isDeleted": 1}
+        ).limit(5)
+        for s in sample:
+            logger.info(f"[USER_LOOKUP] DB candidate: {s}")
+
+    logger.warning(f"[USER_LOOKUP] No user found for: {phone}")
     return None
 
 

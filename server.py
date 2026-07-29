@@ -3,10 +3,14 @@ import hashlib
 import hmac
 import logging
 import sys
+import time
 from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import httpx
+
+PROCESSED_WEBHOOKS: dict[str, float] = {}
+WEBHOOK_TTL_SECONDS = 60
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -29,8 +33,19 @@ class WebhookEvent(BaseModel):
     data: Optional[dict] = None
 
 
+def _is_duplicate_webhook(idempotency_key: str) -> bool:
+    now = time.time()
+    expired = [k for k, ts in PROCESSED_WEBHOOKS.items() if now - ts > WEBHOOK_TTL_SECONDS]
+    for k in expired:
+        del PROCESSED_WEBHOOKS[k]
+    if idempotency_key in PROCESSED_WEBHOOKS:
+        return True
+    PROCESSED_WEBHOOKS[idempotency_key] = now
+    return False
+
+
 async def send_whatsapp_message(phone: str, text: str, chat_id: str | None = None):
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:
         url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/messages/send-text"
         headers = {
             "Content-Type": "application/json",
@@ -96,11 +111,19 @@ async def handle_webhook(request: Request):
 
     event = body.get("event")
     data = body.get("data", {})
+    idempotency_key = body.get("idempotencyKey")
 
     # Only handle incoming messages
     if event != "message.received":
         logger.info(f"Ignoring event: {event}")
         return {"status": "ignored"}
+
+    # Deduplicate webhook deliveries
+    if idempotency_key:
+        if _is_duplicate_webhook(idempotency_key):
+            logger.info(f"Duplicate webhook ignored (idempotencyKey={idempotency_key})")
+            return {"status": "duplicate"}
+        logger.info(f"Processing new webhook (idempotencyKey={idempotency_key})")
 
     message = data.get("body", data)
     logger.debug(f"Message raw: {json.dumps(message, default=str)[:300] if isinstance(message, (dict, list)) else str(message)[:300]}")

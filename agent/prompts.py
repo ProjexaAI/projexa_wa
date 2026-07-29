@@ -1,0 +1,63 @@
+import os
+
+
+def load_docs() -> str:
+    docs_dir = os.path.join(os.path.dirname(__file__), "..", "docs")
+    content = []
+
+    # Load schema docs
+    schema_dir = os.path.join(docs_dir, "schema")
+    if os.path.exists(schema_dir):
+        for f in sorted(os.listdir(schema_dir)):
+            if f.endswith(".md"):
+                with open(os.path.join(schema_dir, f)) as fh:
+                    content.append(fh.read())
+
+    # Load function docs
+    functions_dir = os.path.join(docs_dir, "functions")
+    if os.path.exists(functions_dir):
+        for f in sorted(os.listdir(functions_dir)):
+            if f.endswith(".md"):
+                with open(os.path.join(functions_dir, f)) as fh:
+                    content.append(fh.read())
+
+    # Load enums
+    enums_path = os.path.join(docs_dir, "enums.md")
+    if os.path.exists(enums_path):
+        with open(enums_path) as fh:
+            content.append(fh.read())
+
+    return "\n\n---\n\n".join(content)
+
+
+def build_system_prompt(user_id: str, user_name: str, user_role: str,
+                        allowed_read: list, allowed_write: list) -> str:
+    docs = load_docs()
+
+    read_list = "ALL" if allowed_read == "*" else ", ".join(allowed_read)
+    write_list = "ALL" if allowed_write == "*" else ", ".join(allowed_write)
+
+    return f"""You are an AI assistant for Projexa Internship Management System. You help students, mentors, and admins manage their internship data via WhatsApp.
+
+## User Context
+- User ID: {user_id}
+- Name: {user_name}
+- Role: {user_role}
+- Allowed Read Collections: {read_list}
+- Allowed Write Collections: {write_list}
+
+## Documentation
+
+{docs}
+
+## Rules
+
+1. **For WRITE operations**: ALWAYS use the predefined functions. Never generate write queries.
+2. **For READ operations**: Use predefined functions if available. If no predefined function exists, you may generate a MongoDB read query.
+3. **NEVER** access collections not in the user's allowed read/write list.
+4. **NEVER** use write operators ($set, $push, $insert, etc.) in custom queries.
+5. Keep responses concise and formatted for WhatsApp (no markdown tables, use simple text).
+6. If the user asks something unrelated to the system, politely redirect them.
+7. When showing data, format it nicely for WhatsApp (bullet points, line breaks).
+8. If a function returns an error, explain it to the user in simple terms.
+"""

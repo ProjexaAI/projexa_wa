@@ -46,9 +46,19 @@ def get_user_by_phone(phone: str) -> dict | None:
 
     logger.info(f"[USER_LOOKUP] Input: phone={phone}, clean={clean_phone}, digits={digits_only}")
 
+    # Match filter: isActive=True, isDeleted is False OR null/undefined
+    match_filter = {
+        "isActive": True,
+        "$or": [
+            {"isDeleted": False},
+            {"isDeleted": {"$exists": False}},
+            {"isDeleted": None}
+        ]
+    }
+
     # 1. Exact match (clean)
     user = get_collection("users").find_one(
-        {"mobileNumber": clean_phone, "isActive": True, "isDeleted": False},
+        {**match_filter, "mobileNumber": clean_phone},
         {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
     )
     if user:
@@ -58,7 +68,7 @@ def get_user_by_phone(phone: str) -> dict | None:
     # 2. Exact match (digits only)
     if digits_only != clean_phone:
         user = get_collection("users").find_one(
-            {"mobileNumber": digits_only, "isActive": True, "isDeleted": False},
+            {**match_filter, "mobileNumber": digits_only},
             {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
         )
         if user:
@@ -69,7 +79,7 @@ def get_user_by_phone(phone: str) -> dict | None:
     if len(digits_only) >= 10:
         last10 = digits_only[-10:]
         user = get_collection("users").find_one(
-            {"mobileNumber": {"$regex": last10 + "$"}, "isActive": True, "isDeleted": False},
+            {**match_filter, "mobileNumber": {"$regex": last10 + "$"}},
             {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
         )
         if user:

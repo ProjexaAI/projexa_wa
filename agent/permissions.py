@@ -36,11 +36,38 @@ ROLE_PERMISSIONS = {
 
 
 def get_user_by_phone(phone: str) -> dict | None:
+    # Strip @lid or @c.us suffixes
+    clean_phone = phone.replace("@lid", "").replace("@c.us", "")
+
+    # Try exact match first
+    user = get_collection("users").find_one(
+        {"mobileNumber": clean_phone, "isActive": True, "isDeleted": False},
+        {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
+    )
+    if user:
+        return user
+
+    # Try with @lid suffix (WhatsApp LID format)
     user = get_collection("users").find_one(
         {"mobileNumber": phone, "isActive": True, "isDeleted": False},
         {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
     )
-    return user
+    if user:
+        return user
+
+    # Try regex match (e.g., user stored as "+919876543210" or "91-9876543210")
+    import re
+    digits_only = re.sub(r"[^0-9]", "", clean_phone)
+    if len(digits_only) >= 10:
+        # Match last 10 digits to handle country code variations
+        user = get_collection("users").find_one(
+            {"mobileNumber": {"$regex": digits_only[-10:] + "$"}, "isActive": True, "isDeleted": False},
+            {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1}
+        )
+        if user:
+            return user
+
+    return None
 
 
 def can_read(user_role: str, collection: str) -> bool:

@@ -81,12 +81,12 @@ async def handle_webhook(request: Request):
 
     if isinstance(message, str):
         text = message
-        phone = data.get("from", "").replace("@c.us", "")
+        phone = data.get("from", "").replace("@c.us", "").replace("@lid", "")
         msg_type = data.get("type", "text")
     elif isinstance(message, dict):
         text_obj = message.get("text", {})
         text = text_obj.get("body", "") if isinstance(text_obj, dict) else str(text_obj)
-        phone = message.get("from", "").replace("@c.us", "")
+        phone = message.get("from", "").replace("@c.us", "").replace("@lid", "")
         msg_type = message.get("type")
     else:
         logger.warning(f"Invalid message format: type={type(message)}")

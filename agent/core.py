@@ -1,4 +1,5 @@
 import json
+import time
 from openai import OpenAI
 from config import OPENCODE_API_KEY, OPENCODE_MODEL, OPENCODE_BASE_URL
 from agent.prompts import build_system_prompt
@@ -9,6 +10,11 @@ from agent.permissions import get_allowed_collections
 from bson import ObjectId
 
 client = OpenAI(api_key=OPENCODE_API_KEY, base_url=OPENCODE_BASE_URL)
+
+# Conversation history: {user_id: {"messages": [...], "timestamp": float}}
+CONVERSATION_HISTORY: dict[str, dict] = {}
+HISTORY_TTL_SECONDS = 900  # 15 minutes
+MAX_HISTORY_MESSAGES = 20  # Keep last 20 messages (user + assistant pairs)
 
 # Convert function registry to OpenAI function calling format
 TOOL_DEFINITIONS = []
@@ -111,6 +117,24 @@ def execute_custom_query(params: dict, user_role: str, allowed_read: list) -> di
         return {"error": str(e)}
 
 
+def _load_history(user_id: str) -> list[dict]:
+    entry = CONVERSATION_HISTORY.get(user_id)
+    if not entry:
+        return []
+    if time.time() - entry["timestamp"] > HISTORY_TTL_SECONDS:
+        del CONVERSATION_HISTORY[user_id]
+        return []
+    return entry["messages"]
+
+
+def _save_history(user_id: str, messages: list[dict]):
+    trimmed = messages[-MAX_HISTORY_MESSAGES:]
+    CONVERSATION_HISTORY[user_id] = {
+        "messages": trimmed,
+        "timestamp": time.time()
+    }
+
+
 def process_message(user_id: str, user_name: str, user_role: str, message: str) -> str:
     allowed = get_allowed_collections(user_role)
     allowed_read = allowed["read"]
@@ -124,10 +148,13 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
         allowed_write=allowed_write
     )
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": message}
-    ]
+    # Load prior conversation history
+    history = _load_history(user_id)
+
+    # Build messages: system prompt + history + new user message
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": message})
 
     # Function calling loop (max 5 iterations to prevent infinite loops)
     for _ in range(5):
@@ -142,7 +169,12 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
 
         # If no tool call, return the text response
         if not choice.message.tool_calls:
-            return choice.message.content or "I couldn't process your request."
+            final_text = choice.message.content or "I couldn't process your request."
+            # Save conversation: user message + assistant response
+            _save_history(user_id, messages + [
+                {"role": "assistant", "content": final_text}
+            ])
+            return final_text
 
         # Process tool calls
         messages.append(choice.message)
@@ -159,14 +191,12 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
                 result = execute_custom_query(func_args, user_role, allowed_read)
             else:
                 # Handle predefined function
-                # Convert string params to appropriate types
                 func_def = FUNCTIONS.get(func_name, {})
                 converted_args = {}
                 for k, v in func_args.items():
                     if isinstance(v, str):
-                        # Try to convert to proper types
                         if k.endswith("_id") and len(v) == 24:
-                            converted_args[k] = v  # Keep as string, handler will convert
+                            converted_args[k] = v
                         elif v.isdigit():
                             converted_args[k] = int(v)
                         elif v.replace(".", "").isdigit():
@@ -184,5 +214,7 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
                 "content": json.dumps(result, default=str)
             })
 
-    # If we've exceeded iterations, return what we have
-    return "I processed your request but needed more steps. Please try a simpler query."
+    # If we've exceeded iterations, save what we have and return
+    final_text = "I processed your request but needed more steps. Please try a simpler query."
+    _save_history(user_id, messages + [{"role": "assistant", "content": final_text}])
+    return final_text

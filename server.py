@@ -29,21 +29,47 @@ class WebhookEvent(BaseModel):
     data: Optional[dict] = None
 
 
-async def send_whatsapp_message(phone: str, text: str):
+async def send_whatsapp_message(phone: str, text: str, chat_id: str | None = None):
     async with httpx.AsyncClient() as client:
         url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/messages/send-text"
         headers = {
             "Content-Type": "application/json",
             "X-API-Key": OPENWA_API_KEY
         }
+        # Use provided chat_id, or build from phone
+        if not chat_id:
+            chat_id = f"{phone}@c.us"
         payload = {
-            "chatId": f"{phone}@c.us",
+            "chatId": chat_id,
             "text": text
         }
-        logger.info(f"Sending message to {phone}: {text[:100]}...")
+        logger.info(f"Sending message to {chat_id}: {text[:100]}...")
         response = await client.post(url, json=payload, headers=headers)
         logger.info(f"Send response status: {response.status_code}, body: {response.text[:200]}")
         return response.json()
+
+
+async def resolve_lid_to_phone(lid: str) -> str | None:
+    """Resolve a WhatsApp LID (e.g. 159558102180073@lid) to a phone number."""
+    async with httpx.AsyncClient() as client:
+        url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/contacts/{lid}/phone"
+        headers = {
+            "Content-Type": "application/json",
+            "X-API-Key": OPENWA_API_KEY
+        }
+        try:
+            response = await client.get(url, headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                phone = data.get("phone")
+                logger.info(f"LID resolution: {lid} -> {phone}")
+                return phone
+            else:
+                logger.warning(f"LID resolution failed: {response.status_code} {response.text[:200]}")
+                return None
+        except Exception as e:
+            logger.error(f"LID resolution error: {e}")
+            return None
 
 
 async def send_whatsapp_document(phone: str, file_path: str, caption: str = ""):
@@ -79,18 +105,33 @@ async def handle_webhook(request: Request):
     message = data.get("body", data)
     logger.debug(f"Message raw: {json.dumps(message, default=str)[:300] if isinstance(message, (dict, list)) else str(message)[:300]}")
 
+    # Extract raw sender JID (may be @c.us or @lid)
+    raw_from = data.get("from", "") if isinstance(message, str) else message.get("from", data.get("from", ""))
+
     if isinstance(message, str):
         text = message
-        phone = data.get("from", "").replace("@c.us", "").replace("@lid", "")
         msg_type = data.get("type", "text")
     elif isinstance(message, dict):
         text_obj = message.get("text", {})
         text = text_obj.get("body", "") if isinstance(text_obj, dict) else str(text_obj)
-        phone = message.get("from", "").replace("@c.us", "").replace("@lid", "")
         msg_type = message.get("type")
     else:
         logger.warning(f"Invalid message format: type={type(message)}")
         return {"status": "invalid_message_format"}
+
+    # Resolve phone number from sender JID
+    if raw_from.endswith("@lid"):
+        logger.info(f"Sender is LID: {raw_from}, resolving to phone...")
+        resolved_phone = await resolve_lid_to_phone(raw_from)
+        if resolved_phone:
+            phone = resolved_phone
+            logger.info(f"LID resolved: {raw_from} -> {phone}")
+        else:
+            # Fallback: strip @lid and try lookup
+            phone = raw_from.replace("@lid", "")
+            logger.warning(f"LID resolution failed, using stripped value: {phone}")
+    else:
+        phone = raw_from.replace("@c.us", "")
 
     logger.info(f"Parsed: phone={phone}, msg_type={msg_type}, text={text[:100] if text else ''}")
 
@@ -117,7 +158,7 @@ async def handle_webhook(request: Request):
     logger.info(f"User lookup result: {user}")
     if not user:
         logger.warning(f"User not found for phone: {phone}")
-        await send_whatsapp_message(phone, "You are not registered in the system. Please contact admin.")
+        await send_whatsapp_message(phone, "You are not registered in the system. Please contact admin.", chat_id=raw_from)
         return {"status": "user_not_found"}
 
     user_id = str(user["_id"])
@@ -130,12 +171,12 @@ async def handle_webhook(request: Request):
         logger.info(f"Processing message through AI agent...")
         response_text = await _process_async(user_id, user_name, user_role, text)
         logger.info(f"Agent response: {response_text[:200] if response_text else 'None'}")
-        await send_whatsapp_message(phone, response_text)
+        await send_whatsapp_message(phone, response_text, chat_id=raw_from)
         logger.info("Message sent successfully")
         return {"status": "sent"}
     except Exception as e:
         logger.error(f"Error processing message: {e}", exc_info=True)
-        await send_whatsapp_message(phone, "Sorry, something went wrong. Please try again.")
+        await send_whatsapp_message(phone, "Sorry, something went wrong. Please try again.", chat_id=raw_from)
         return {"status": "error", "detail": str(e)}
 
 

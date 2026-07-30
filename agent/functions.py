@@ -575,13 +575,6 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
                         "audience": {"$in": [role_upper, "BOTH"]},
                         "trackScope": "ALL_TRACKS",
                     },
-                    # Path 4: ALL_TRACKS announcement where user enrolled after creation
-                    # (user is NOT in recipientStatuses but should see it)
-                    {
-                        "audience": {"$in": [role_upper, "BOTH"]},
-                        "trackScope": "ALL_TRACKS",
-                        "recipientStatuses.userId": {"$ne": user_oid},
-                    },
                 ]
             }
         else:

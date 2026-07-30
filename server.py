@@ -71,7 +71,7 @@ async def send_whatsapp_document(phone: str, file_path: str, caption: str = "", 
         filename = file_path.split("/")[-1].split("?")[0] or "document.pdf"
         payload = {
             "chatId": chat_id or f"{phone}@c.us",
-            "document": file_path,
+            "url": file_path,
             "filename": filename,
             "caption": caption
         }
@@ -86,9 +86,14 @@ async def send_whatsapp_image(phone: str, file_path: str, caption: str = "", cha
         url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/messages/send-image"
         headers = {"Content-Type": "application/json", "X-API-Key": OPENWA_API_KEY}
         filename = file_path.split("/")[-1].split("?")[0] or "image.jpg"
+        # Determine mimetype from extension
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "jpeg"
+        mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+        mimetype = mime_map.get(ext, f"image/{ext}")
         payload = {
             "chatId": chat_id or f"{phone}@c.us",
-            "image": file_path,
+            "url": file_path,
+            "mimetype": mimetype,
             "filename": filename,
             "caption": caption
         }
@@ -105,7 +110,7 @@ async def send_whatsapp_video(phone: str, file_path: str, caption: str = "", cha
         filename = file_path.split("/")[-1].split("?")[0] or "video.mp4"
         payload = {
             "chatId": chat_id or f"{phone}@c.us",
-            "video": file_path,
+            "url": file_path,
             "filename": filename,
             "caption": caption
         }

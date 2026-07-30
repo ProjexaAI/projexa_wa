@@ -17,6 +17,28 @@ CONVERSATION_HISTORY: dict[str, dict] = {}
 HISTORY_TTL_SECONDS = 900  # 15 minutes
 MAX_HISTORY_MESSAGES = 20  # Keep last 20 messages (user + assistant pairs)
 
+# Simple cache for user/team data: {cache_key: {"data": ..., "timestamp": float}}
+_DATA_CACHE: dict[str, dict] = {}
+CACHE_TTL_SECONDS = 300  # 5 minutes
+
+
+def _get_cached(key: str):
+    """Get cached data if still valid."""
+    entry = _DATA_CACHE.get(key)
+    if entry and time.time() - entry["timestamp"] < CACHE_TTL_SECONDS:
+        return entry["data"]
+    return None
+
+
+def _set_cached(key: str, data):
+    """Cache data with timestamp."""
+    _DATA_CACHE[key] = {"data": data, "timestamp": time.time()}
+    # Prune old entries if cache grows too large
+    if len(_DATA_CACHE) > 100:
+        oldest_keys = sorted(_DATA_CACHE.keys(), key=lambda k: _DATA_CACHE[k]["timestamp"])[:50]
+        for k in oldest_keys:
+            del _DATA_CACHE[k]
+
 # Convert function registry to OpenAI function calling format
 TOOL_DEFINITIONS = []
 for name, func in FUNCTIONS.items():
@@ -94,6 +116,47 @@ def _serialize(doc):
         return {"_serialization_error": True}
 
 
+def _cast_object_ids(filter_query: dict) -> dict:
+    """
+    Cast string values to ObjectId for fields that typically store ObjectIds.
+    This handles the case where the AI generates queries with string IDs.
+    """
+    # Fields that typically store ObjectId values
+    ID_FIELDS = {
+        "_id", "userId", "studentId", "mentorId", "enrollmentId",
+        "assignmentId", "leaderId", "memberId", "teamId", "trackId",
+        "sessionId", "trackSessionConfigId", "announcementId",
+        "interactionId", "notificationId", "inviterId", "inviteeId"
+    }
+
+    result = {}
+    for k, v in filter_query.items():
+        if k.startswith("$"):
+            # Handle logical operators ($or, $and, etc.)
+            if isinstance(v, list):
+                result[k] = [_cast_object_ids(item) if isinstance(item, dict) else item for item in v]
+            elif isinstance(v, dict):
+                result[k] = _cast_object_ids(v)
+            else:
+                result[k] = v
+        elif k in ID_FIELDS and isinstance(v, str) and len(v) == 24:
+            try:
+                result[k] = ObjectId(v)
+            except Exception:
+                result[k] = v
+        elif isinstance(v, dict):
+            result[k] = _cast_object_ids(v)
+        elif isinstance(v, list):
+            result[k] = [
+                _cast_object_ids(item) if isinstance(item, dict)
+                else (ObjectId(item) if isinstance(item, str) and len(item) == 24 else item)
+                for item in v
+            ]
+        else:
+            result[k] = v
+    return result
+
+
 def execute_custom_query(params: dict, user_role: str, allowed_read: list) -> dict:
     collection = params.get("collection", "")
 
@@ -108,7 +171,7 @@ def execute_custom_query(params: dict, user_role: str, allowed_read: list) -> di
 
     try:
         col = get_collection(collection)
-        filter_query = params.get("filter", {})
+        filter_query = _cast_object_ids(params.get("filter", {}))
         projection = params.get("projection")
         sort = params.get("sort")
         limit = min(params.get("limit", 20), 100)

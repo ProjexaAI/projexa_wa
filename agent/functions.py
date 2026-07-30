@@ -1,6 +1,29 @@
 from datetime import datetime
 from agent.db import get_collection
 from bson import ObjectId
+import time
+
+# Simple in-memory cache: {cache_key: {"data": ..., "timestamp": float}}
+_CACHE: dict[str, dict] = {}
+_CACHE_TTL = 300  # 5 minutes
+
+
+def _get_cache(key: str):
+    """Get cached data if still valid."""
+    entry = _CACHE.get(key)
+    if entry and time.time() - entry["timestamp"] < _CACHE_TTL:
+        return entry["data"]
+    return None
+
+
+def _set_cache(key: str, data):
+    """Cache data with timestamp."""
+    _CACHE[key] = {"data": data, "timestamp": time.time()}
+    # Prune old entries if cache grows too large
+    if len(_CACHE) > 200:
+        oldest = sorted(_CACHE.keys(), key=lambda k: _CACHE[k]["timestamp"])[:100]
+        for k in oldest:
+            del _CACHE[k]
 
 
 def _serialize(doc):
@@ -39,7 +62,14 @@ def _serialize(doc):
 # ============================================================
 
 def get_user_by_id(user_id: str) -> dict:
-    return _serialize(get_collection("users").find_one({"_id": ObjectId(user_id)}))
+    cache_key = f"user:{user_id}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+    result = _serialize(get_collection("users").find_one({"_id": ObjectId(user_id)}))
+    if result:
+        _set_cache(cache_key, result)
+    return result
 
 
 def get_user_by_email(email: str) -> dict:
@@ -510,10 +540,53 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
     query = {"isDeleted": {"$ne": True}}
     if user_id and user_role:
         role_upper = user_role.upper()
+        # Filter by audience
         query["$or"] = [
             {"audience": "BOTH"},
             {"audience": role_upper}
         ]
+        # For students, also filter by trackScope
+        if role_upper == "STUDENT":
+            # Get student's track names from enrollments
+            enrollments = list(get_collection("studenttrackenrollments").find(
+                {"studentId": ObjectId(user_id), "status": {"$in": ["ACTIVE", "ENROLLED"]}},
+                {"trackSessionConfigId": 1}
+            ))
+            track_config_ids = [e["trackSessionConfigId"] for e in enrollments if "trackSessionConfigId" in e]
+
+            # Get track names from configs
+            track_names = []
+            if track_config_ids:
+                configs = list(get_collection("tracksessionconfigs").find(
+                    {"_id": {"$in": track_config_ids}},
+                    {"trackId": 1}
+                ))
+                track_ids = [c["trackId"] for c in configs if "trackId" in c]
+                if track_ids:
+                    tracks = list(get_collection("tracks").find(
+                        {"_id": {"$in": track_ids}},
+                        {"name": 1}
+                    ))
+                    track_names = [t["name"] for t in tracks if "name" in t]
+
+            # Add trackScope filter
+            if track_names:
+                query["$and"] = [
+                    {"$or": [
+                        {"trackScope": "ALL_TRACKS"},
+                        {"trackScope": "SELECTED_TRACKS", "targetTrackNames": {"$in": track_names}},
+                        {"trackScope": {"$exists": False}}
+                    ]}
+                ]
+            else:
+                # No enrollments — only show ALL_TRACKS or unspecified
+                query["$and"] = [
+                    {"$or": [
+                        {"trackScope": "ALL_TRACKS"},
+                        {"trackScope": {"$exists": False}}
+                    ]}
+                ]
+
     total = get_collection("announcements").count_documents(query)
     skip = (page - 1) * page_size
     items = list(get_collection("announcements").find(query).skip(skip).limit(page_size).sort("createdAt", -1))
@@ -609,7 +682,14 @@ def list_teams(session_id: str = None, track_config_id: str = None) -> list:
 
 
 def get_team(team_id: str) -> dict:
-    return _serialize(get_collection("teams").find_one({"_id": ObjectId(team_id)}))
+    cache_key = f"team:{team_id}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+    result = _serialize(get_collection("teams").find_one({"_id": ObjectId(team_id)}))
+    if result:
+        _set_cache(cache_key, result)
+    return result
 
 
 def create_team(name: str, leader_id: str, session_id: str, track_session_config_id: str) -> dict:

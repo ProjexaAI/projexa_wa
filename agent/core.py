@@ -84,6 +84,24 @@ TOOL_DEFINITIONS.append({
     }
 })
 
+# Send media tool — allows LLM to send images, videos, documents to the user
+TOOL_DEFINITIONS.append({
+    "type": "function",
+    "function": {
+        "name": "send_media",
+        "description": "Send an image, video, or document to the user via WhatsApp. Use this when the user asks to see a photo, file, document, or any media. The URL must be a direct link to the file (e.g., from CDN or public URL).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Direct URL to the media file"},
+                "type": {"type": "string", "description": "Media type: image, video, or document"},
+                "caption": {"type": "string", "description": "Optional caption to send with the media"}
+            },
+            "required": ["url", "type"]
+        }
+    }
+})
+
 
 def _serialize(doc):
     """Serialize MongoDB document to JSON-safe dict. Handles ObjectId, datetime, and nested objects."""
@@ -313,6 +331,9 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
     messages.extend(history)
     messages.append({"role": "user", "content": message})
 
+    # Track media items from send_media tool calls
+    pending_media = []
+
     # Function calling loop (max 10 iterations to prevent infinite loops)
     for _ in range(10):
         response = client.chat.completions.create(
@@ -327,11 +348,10 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
         # If no tool call, return the text response
         if not choice.message.tool_calls:
             final_text = choice.message.content or "I couldn't process your request."
-            # Save conversation: user message + assistant response
             _save_history(user_id, messages + [
                 {"role": "assistant", "content": final_text}
             ])
-            return {"text": final_text, "media": []}
+            return {"text": final_text, "media": pending_media}
 
         # Process tool calls
         messages.append(choice.message)
@@ -343,8 +363,17 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             except json.JSONDecodeError:
                 func_args = {}
 
+            # Handle send_media — capture and return to caller
+            if func_name == "send_media":
+                media_item = {
+                    "url": func_args.get("url", ""),
+                    "type": func_args.get("type", "document"),
+                    "caption": func_args.get("caption", "")
+                }
+                pending_media.append(media_item)
+                result = {"status": "queued", "type": media_item["type"]}
             # Handle custom MongoDB query
-            if func_name == "execute_mongodb_query":
+            elif func_name == "execute_mongodb_query":
                 result = execute_custom_query(func_args, user_role, allowed_read)
             else:
                 # Handle predefined function
@@ -384,4 +413,4 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
     # If we've exceeded iterations, save what we have and return
     final_text = "I processed your request but needed more steps. Please try a simpler query."
     _save_history(user_id, messages + [{"role": "assistant", "content": final_text}])
-    return {"text": final_text, "media": []}
+    return {"text": final_text, "media": pending_media}

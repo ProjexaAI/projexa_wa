@@ -107,7 +107,7 @@ FUNCTION_RULES = {
     },
     "list_announcements": {
         "keep": ["items", "total", "page", "pageSize"],
-        "item_fields": ["title", "message", "audience", "createdAt"],
+        "item_fields": ["title", "message", "audience", "trackScope", "readAt", "recipientRole", "createdAt"],
         "count_label": "announcements"
     },
     "list_tracks": {
@@ -189,8 +189,10 @@ def _summarize_items(data: list, rules: dict) -> dict:
         # No specific fields — just return count
         return {"total": len(data), "type": count_label}
 
+    # Show all items if ≤ 20, else cap at 10
+    max_items = len(data) if len(data) <= 20 else 10
     summary_items = []
-    for item in data[:5]:  # Max 5 items in summary
+    for item in data[:max_items]:
         if isinstance(item, dict):
             summary_items.append({
                 k: v for k, v in item.items()
@@ -201,7 +203,7 @@ def _summarize_items(data: list, rules: dict) -> dict:
         "total": len(data),
         "type": count_label,
         "items": summary_items,
-        "truncated": len(data) > 5
+        "truncated": len(data) > max_items
     }
 
 
@@ -264,8 +266,9 @@ def summarize_result(
         items = raw_result.get("items") or raw_result.get("results", [])
         total = raw_result.get("total") or raw_result.get("count", len(items))
         if rules.get("item_fields"):
+            max_items = len(items) if len(items) <= 20 else 10
             summary_items = []
-            for item in items[:5]:
+            for item in items[:max_items]:
                 if isinstance(item, dict):
                     summary_items.append({
                         k: v for k, v in item.items()
@@ -275,23 +278,22 @@ def summarize_result(
                 "total": total,
                 "type": rules.get("count_label", "records"),
                 "items": summary_items,
-                "truncated": total > 5
+                "truncated": total > max_items
             }
         else:
             # Generic summarization for items without specific rules
+            max_items = len(items) if len(items) <= 20 else 10
             summary_items = []
-            for item in items[:5]:
+            for item in items[:max_items]:
                 if isinstance(item, dict):
-                    # Keep first 3 fields as sample
-                    keys = list(item.keys())[:3]
-                    summary_items.append({k: item[k] for k in keys})
+                    summary_items.append(item)
                 else:
                     summary_items.append(item)
             summary = {
                 "total": total,
                 "type": rules.get("count_label", "records"),
                 "items": summary_items,
-                "truncated": total > 5
+                "truncated": total > max_items
             }
         return json.dumps(summary, default=str)
 

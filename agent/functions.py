@@ -1247,11 +1247,16 @@ def get_submissions(enrollment_id: str = None, status: str = None, kind: str = N
 # ============================================================
 
 def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
-    """Get document submissions for a student (read-only) with template titles."""
-    query = {"studentId": ObjectId(student_id)}
+    """Get latest document submission per template for a student (read-only)."""
+    query = {"studentId": ObjectId(student_id), "submissionKind": "DOCUMENT"}
     if enrollment_id:
         query["enrollmentId"] = ObjectId(enrollment_id)
-    submissions = list(get_collection("trackonboardingsubmissions").find(query).sort("submittedAt", -1))
+    # Sort by attemptNumber desc, _id desc — latest attempt first per template
+    submissions = list(get_collection("trackonboardingsubmissions").find(query).sort([
+        ("documentTemplateId", 1),
+        ("attemptNumber", -1),
+        ("_id", -1),
+    ]))
     
     # Build template lookup
     template_lookup = {}
@@ -1266,20 +1271,29 @@ def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
                     "isMandatory": tmpl.get("isMandatory", False),
                 }
     
-    # Enrich submissions with template info
+    # Keep only the latest submission per documentTemplateId
+    seen_templates = set()
+    latest_subs = []
     for sub in submissions:
-        template_id = str(sub.get("documentTemplateId", ""))
-        tmpl_info = template_lookup.get(template_id, {})
-        sub["documentTitle"] = tmpl_info.get("title", sub.get("documentTemplateName", "Unknown Document"))
-        sub["documentCode"] = tmpl_info.get("code", "")
-        sub["isMandatory"] = tmpl_info.get("isMandatory", False)
-        # Rename fileUrl to url for easier AI consumption
-        if "files" in sub:
-            for f in sub["files"]:
-                if "fileUrl" in f:
-                    f["url"] = f.pop("fileUrl")
+        tid = str(sub.get("documentTemplateId", ""))
+        if tid not in seen_templates:
+            seen_templates.add(tid)
+            # Treat DRAFT as NOT_SUBMITTED (matches web app behavior)
+            if sub.get("status") == "DRAFT":
+                sub["status"] = "NOT_SUBMITTED"
+            # Enrich with template info
+            tmpl_info = template_lookup.get(tid, {})
+            sub["documentTitle"] = tmpl_info.get("title", sub.get("documentTemplateName", "Unknown Document"))
+            sub["documentCode"] = tmpl_info.get("code", "")
+            sub["isMandatory"] = tmpl_info.get("isMandatory", False)
+            # Rename fileUrl to url for easier AI consumption
+            if "files" in sub:
+                for f in sub["files"]:
+                    if "fileUrl" in f:
+                        f["url"] = f.pop("fileUrl")
+            latest_subs.append(sub)
     
-    return _serialize(submissions)
+    return _serialize(latest_subs)
 
 
 def get_student_document_summary(student_id: str, enrollment_id: str = None) -> dict:

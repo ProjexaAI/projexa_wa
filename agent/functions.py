@@ -539,23 +539,40 @@ def get_student_progress(assignment_id: str) -> dict:
 def list_announcements(user_id: str = None, user_role: str = None, page: int = 1, page_size: int = 20) -> dict:
     """
     List announcements for a user.
-    
-    The Projexa system uses write-time denormalization: at announcement creation,
-    all eligible recipients are added to the `recipientStatuses` embedded array.
-    At query time, we simply check if the user is in that array.
-    
-    No read-time filtering by audience/trackScope is needed — that was already
-    resolved when the announcement was created.
+
+    Uses a two-path query:
+    1. Primary: user is in the denormalized recipientStatuses array (web-app created announcements).
+    2. Fallback: announcement has empty/missing recipientStatuses (WA-agent created) AND
+       matches the user's audience and track scope (ALL_TRACKS for students, etc.).
     """
     try:
         page = max(1, int(page)) if page else 1
         page_size = min(max(1, int(page_size)) if page_size else 20, 100)
 
         if user_id:
-            # Correct pattern: check if user is in recipientStatuses
-            query = {"recipientStatuses.userId": ObjectId(user_id)}
+            user_oid = ObjectId(user_id)
+            role_upper = (user_role or "STUDENT").upper()
+
+            query = {
+                "$or": [
+                    # Path 1: user is in the denormalized recipient list
+                    {"recipientStatuses.userId": user_oid},
+                    # Path 2: announcement has no recipients populated (created via WA agent
+                    # or before the student enrolled) AND matches audience + track scope
+                    {
+                        "recipientStatuses": {"$exists": True, "$size": 0},
+                        "audience": {"$in": [role_upper, "BOTH"]},
+                        "trackScope": "ALL_TRACKS",
+                    },
+                    # Path 3: recipientStatuses field missing entirely (legacy/edge case)
+                    {
+                        "recipientStatuses": {"$exists": False},
+                        "audience": {"$in": [role_upper, "BOTH"]},
+                        "trackScope": "ALL_TRACKS",
+                    },
+                ]
+            }
         else:
-            # No user specified — return all announcements (admin/internal use)
             query = {}
 
         total = get_collection("announcements").count_documents(query)
@@ -564,7 +581,6 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
 
         # Extract the current user's recipient status from each announcement
         if user_id:
-            user_oid = ObjectId(user_id)
             for item in items:
                 recipient = next(
                     (r for r in item.get("recipientStatuses", []) if r.get("userId") == user_oid),
@@ -594,6 +610,87 @@ def create_announcement(title: str, message: str, audience: str, creator_user_id
     if not creator:
         return {"error": "Creator not found"}
 
+    role_upper = (audience or "STUDENTS").upper()
+
+    # Resolve recipients based on audience and track scope
+    user_query: dict = {"isActive": True, "isDeleted": False}
+    if role_upper == "STUDENTS":
+        user_query["roles"] = "STUDENT"
+    elif role_upper == "MENTORS":
+        user_query["roles"] = "MENTOR"
+    # BOTH → no roles filter
+
+    candidate_users = list(get_collection("users").find(
+        user_query,
+        {"_id": 1, "name": 1, "email": 1, "roles": 1, "rollNumber": 1, "programme": 1, "section": 1}
+    ))
+
+    # Build recipientStatuses
+    recipient_statuses = []
+    now = datetime.utcnow()
+
+    if track_scope == "ALL_TRACKS":
+        # Include all matching candidates
+        for u in candidate_users:
+            user_role = "STUDENT" if "STUDENT" in u.get("roles", []) else "MENTOR"
+            recipient_statuses.append({
+                "userId": u["_id"],
+                "role": user_role,
+                "name": u.get("name", ""),
+                "email": u.get("email", ""),
+                "rollNumber": u.get("rollNumber"),
+                "programme": u.get("programme"),
+                "section": u.get("section"),
+                "trackIds": [],
+                "trackNames": [],
+                "parentTrackIds": [],
+                "parentTrackNames": [],
+                "notificationId": None,
+                "readAt": None,
+                "emailQueuedAt": None,
+                "emailMessageId": None,
+            })
+    else:
+        # For SELECTED_TRACKS / UNASSIGNED_STUDENTS: filter by enrollment
+        enrolled_student_ids = set()
+        enrollments = list(get_collection("studenttrackenrollments").find(
+            {"status": {"$in": ["ACTIVE", "ENROLLED"]}}
+        ))
+        for e in enrollments:
+            enrolled_student_ids.add(e["studentId"])
+
+        for u in candidate_users:
+            uid = u["_id"]
+            user_role = "STUDENT" if "STUDENT" in u.get("roles", []) else "MENTOR"
+
+            if track_scope == "UNASSIGNED_STUDENTS":
+                # Only students without an enrollment
+                if user_role == "STUDENT" and uid in enrolled_student_ids:
+                    continue
+            elif track_scope == "SELECTED_TRACKS":
+                # Only students with an enrollment (specific track filtering is complex;
+                # include all enrolled students as a reasonable approximation)
+                if user_role == "STUDENT" and uid not in enrolled_student_ids:
+                    continue
+
+            recipient_statuses.append({
+                "userId": uid,
+                "role": user_role,
+                "name": u.get("name", ""),
+                "email": u.get("email", ""),
+                "rollNumber": u.get("rollNumber"),
+                "programme": u.get("programme"),
+                "section": u.get("section"),
+                "trackIds": [],
+                "trackNames": [],
+                "parentTrackIds": [],
+                "parentTrackNames": [],
+                "notificationId": None,
+                "readAt": None,
+                "emailQueuedAt": None,
+                "emailMessageId": None,
+            })
+
     record = {
         "title": title,
         "message": message,
@@ -604,9 +701,13 @@ def create_announcement(title: str, message: str, audience: str, creator_user_id
         "creatorRole": "ADMIN" if "ADMIN" in creator.get("roles", []) else "MENTOR",
         "creatorName": creator.get("name", ""),
         "creatorEmail": creator.get("email", ""),
-        "recipientCount": 0,
+        "recipientStatuses": recipient_statuses,
+        "readBy": [],
+        "recipientCount": len(recipient_statuses),
+        "studentRecipientCount": sum(1 for r in recipient_statuses if r["role"] == "STUDENT"),
+        "mentorRecipientCount": sum(1 for r in recipient_statuses if r["role"] == "MENTOR"),
         "readCount": 0,
-        "createdAt": datetime.utcnow()
+        "createdAt": now,
     }
     result = get_collection("announcements").insert_one(record)
     record["_id"] = str(result.inserted_id)

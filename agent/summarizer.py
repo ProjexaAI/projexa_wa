@@ -85,6 +85,7 @@ FUNCTION_RULES = {
         "count_label": "interactions"
     },
     "list_users": {
+        "keep": ["items", "total", "page", "pageSize"],
         "item_fields": ["name", "email", "roles"],
         "count_label": "users"
     },
@@ -100,12 +101,19 @@ FUNCTION_RULES = {
         "count_label": "tracks"
     },
     "list_notifications": {
+        "keep": ["items", "total", "page", "pageSize"],
         "item_fields": ["title", "message", "status", "createdAt"],
         "count_label": "notifications"
     },
     "list_announcements": {
+        "keep": ["items", "total", "page", "pageSize"],
         "item_fields": ["title", "message", "audience", "createdAt"],
         "count_label": "announcements"
+    },
+    "list_tracks": {
+        "keep": ["items", "total", "page", "pageSize"],
+        "item_fields": ["name", "type", "createdAt"],
+        "count_label": "tracks"
     },
     "execute_mongodb_query": {
         "item_fields": [],
@@ -234,7 +242,7 @@ def summarize_result(
     # Apply function-specific rules
     if isinstance(raw_result, dict) and rules:
         reduced = _apply_rules(raw_result, rules)
-        if _json_size(reduced) <= MAX_SUMMARY_CHARS:
+        if reduced and _json_size(reduced) <= MAX_SUMMARY_CHARS:
             return json.dumps(reduced, default=str)
 
     # Handle list results

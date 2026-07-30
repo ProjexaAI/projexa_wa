@@ -281,7 +281,18 @@ def _build_conversation_context(messages: list) -> str:
     return "\n".join(context_parts[-4:])  # Last 4 lines max
 
 
-def process_message(user_id: str, user_name: str, user_role: str, message: str) -> str:
+def process_message(user_id: str, user_name: str, user_role: str, message: str) -> dict:
+    """
+    Process a user message and return a response with optional media.
+
+    Returns:
+        dict with keys:
+            - text (str): The text response
+            - media (list): Optional list of media items, each with:
+                - url (str): URL or file path to the media
+                - type (str): "image", "video", "document", or "audio"
+                - caption (str): Optional caption
+    """
     allowed = get_allowed_collections(user_role)
     allowed_read = allowed["read"]
     allowed_write = allowed["write"]
@@ -320,7 +331,7 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             _save_history(user_id, messages + [
                 {"role": "assistant", "content": final_text}
             ])
-            return final_text
+            return {"text": final_text, "media": []}
 
         # Process tool calls
         messages.append(choice.message)
@@ -373,4 +384,4 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
     # If we've exceeded iterations, save what we have and return
     final_text = "I processed your request but needed more steps. Please try a simpler query."
     _save_history(user_id, messages + [{"role": "assistant", "content": final_text}])
-    return final_text
+    return {"text": final_text, "media": []}

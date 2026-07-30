@@ -118,6 +118,10 @@ FUNCTION_RULES = {
     "execute_mongodb_query": {
         "item_fields": [],
         "count_label": "results"
+    },
+    "get_announcement_attachments": {
+        "keep": ["announcementId", "title", "attachments", "count"],
+        "count_label": "attachments"
     }
 }
 

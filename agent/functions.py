@@ -628,6 +628,23 @@ def get_announcement(announcement_id: str) -> dict:
     return _serialize(get_collection("announcements").find_one({"_id": ObjectId(announcement_id)}))
 
 
+def get_announcement_attachments(announcement_id: str) -> dict:
+    """Get attachments (images, documents, videos) for an announcement."""
+    ann = get_collection("announcements").find_one(
+        {"_id": ObjectId(announcement_id)},
+        {"attachments": 1, "title": 1}
+    )
+    if not ann:
+        return {"error": "Announcement not found"}
+    attachments = ann.get("attachments", [])
+    return {
+        "announcementId": announcement_id,
+        "title": ann.get("title", ""),
+        "attachments": _serialize(attachments),
+        "count": len(attachments)
+    }
+
+
 def create_announcement(title: str, message: str, audience: str, creator_user_id: str,
                         track_scope: str = "ALL_TRACKS") -> dict:
     creator = get_collection("users").find_one({"_id": ObjectId(creator_user_id)})
@@ -1190,6 +1207,13 @@ FUNCTIONS = {
         "description": "Get an announcement by ID",
         "params": {"announcement_id": "string"},
         "handler": get_announcement,
+        "permission": "read",
+        "collection": "announcements"
+    },
+    "get_announcement_attachments": {
+        "description": "Get attachments (images, documents, videos) for an announcement. Returns file URLs that can be sent to the user.",
+        "params": {"announcement_id": "string"},
+        "handler": get_announcement_attachments,
         "permission": "read",
         "collection": "announcements"
     },

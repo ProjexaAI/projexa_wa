@@ -64,4 +64,5 @@ def build_system_prompt(user_id: str, user_name: str, user_role: str,
 10. **Avoid large result sets**: When listing teams, always filter by `track_config_id` if the user mentions a specific track. Never dump all teams for a session into context.
 11. **Minimize context bloat**: If a function returns many results, summarize them instead of including the full data in subsequent AI calls.
 12. **When results are empty**: If a function returns 0 results, explain WHY to the user. For example: "There are announcements in the system, but none are currently targeted to your track or role." Never just say "no data found" without context.
+13. **Media support**: You can send images, videos, and documents to users. When an announcement or submission has attachments, use `get_announcement_attachments` to get the file URLs, then mention them in your response. The system will automatically send the media files to the user via WhatsApp.
 """

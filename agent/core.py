@@ -64,25 +64,34 @@ TOOL_DEFINITIONS.append({
 
 
 def _serialize(doc):
-    if doc is None:
-        return None
-    if isinstance(doc, list):
-        return [_serialize(d) for d in doc]
-    if isinstance(doc, dict):
-        result = {}
-        for k, v in doc.items():
-            if isinstance(v, ObjectId):
-                result[k] = str(v)
-            elif hasattr(v, 'isoformat'):
-                result[k] = v.isoformat()
-            elif isinstance(v, dict):
-                result[k] = _serialize(v)
-            elif isinstance(v, list):
-                result[k] = [_serialize(i) for i in v]
-            else:
-                result[k] = v
-        return result
-    return doc
+    """Serialize MongoDB document to JSON-safe dict. Handles ObjectId, datetime, and nested objects."""
+    try:
+        if doc is None:
+            return None
+        if isinstance(doc, list):
+            return [_serialize(d) for d in doc]
+        if isinstance(doc, dict):
+            result = {}
+            for k, v in doc.items():
+                try:
+                    if isinstance(v, ObjectId):
+                        result[k] = str(v)
+                    elif hasattr(v, 'isoformat'):
+                        result[k] = v.isoformat()
+                    elif isinstance(v, dict):
+                        result[k] = _serialize(v)
+                    elif isinstance(v, list):
+                        result[k] = [_serialize(i) for i in v]
+                    elif isinstance(v, (int, float, str, bool)):
+                        result[k] = v
+                    else:
+                        result[k] = str(v)
+                except Exception:
+                    result[k] = str(v) if v is not None else None
+            return result
+        return doc
+    except Exception:
+        return {"_serialization_error": True}
 
 
 def execute_custom_query(params: dict, user_role: str, allowed_read: list) -> dict:
@@ -110,7 +119,6 @@ def execute_custom_query(params: dict, user_role: str, allowed_read: list) -> di
             sort_list = [(k, v) for k, v in sort.items()]
             cursor = cursor.sort(sort_list)
 
-        cursor = cursor.limit(TIMEOUT_SECONDS)
         results = list(cursor.limit(limit))
 
         return {"results": _serialize(results), "count": len(results)}

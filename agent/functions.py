@@ -4,25 +4,34 @@ from bson import ObjectId
 
 
 def _serialize(doc):
-    if doc is None:
-        return None
-    if isinstance(doc, list):
-        return [_serialize(d) for d in doc]
-    if isinstance(doc, dict):
-        result = {}
-        for k, v in doc.items():
-            if isinstance(v, ObjectId):
-                result[k] = str(v)
-            elif isinstance(v, datetime):
-                result[k] = v.isoformat()
-            elif isinstance(v, dict):
-                result[k] = _serialize(v)
-            elif isinstance(v, list):
-                result[k] = [_serialize(i) for i in v]
-            else:
-                result[k] = v
-        return result
-    return doc
+    """Serialize MongoDB document to JSON-safe dict. Handles ObjectId, datetime, and nested objects."""
+    try:
+        if doc is None:
+            return None
+        if isinstance(doc, list):
+            return [_serialize(d) for d in doc]
+        if isinstance(doc, dict):
+            result = {}
+            for k, v in doc.items():
+                try:
+                    if isinstance(v, ObjectId):
+                        result[k] = str(v)
+                    elif isinstance(v, datetime):
+                        result[k] = v.isoformat()
+                    elif isinstance(v, dict):
+                        result[k] = _serialize(v)
+                    elif isinstance(v, list):
+                        result[k] = [_serialize(i) for i in v]
+                    elif isinstance(v, (int, float, str, bool)):
+                        result[k] = v
+                    else:
+                        result[k] = str(v)
+                except Exception:
+                    result[k] = str(v) if v is not None else None
+            return result
+        return doc
+    except Exception:
+        return {"_serialization_error": True}
 
 
 # ============================================================
@@ -497,13 +506,13 @@ def get_student_progress(assignment_id: str) -> dict:
 # ANNOUNCEMENT FUNCTIONS
 # ============================================================
 
-def list_announcements(user_id: str = None, page: int = 1, page_size: int = 20) -> dict:
-    query = {}
-    if user_id:
+def list_announcements(user_id: str = None, user_role: str = None, page: int = 1, page_size: int = 20) -> dict:
+    query = {"isDeleted": {"$ne": True}}
+    if user_id and user_role:
+        role_upper = user_role.upper()
         query["$or"] = [
             {"audience": "BOTH"},
-            {"audience": "STUDENTS"},
-            {"audience": "MENTORS"}
+            {"audience": role_upper}
         ]
     total = get_collection("announcements").count_documents(query)
     skip = (page - 1) * page_size
@@ -975,8 +984,8 @@ FUNCTIONS = {
         "collection": "studentprogresses"
     },
     "list_announcements": {
-        "description": "List announcements",
-        "params": {"user_id": "string (optional)", "page": "int", "page_size": "int"},
+        "description": "List announcements for the user's role",
+        "params": {"user_id": "string (optional)", "user_role": "string (optional)", "page": "int", "page_size": "int"},
         "handler": list_announcements,
         "permission": "read",
         "collection": "announcements"

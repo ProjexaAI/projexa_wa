@@ -196,11 +196,14 @@ def _load_history(user_id: str) -> list[dict]:
     if time.time() - entry["timestamp"] > HISTORY_TTL_SECONDS:
         del CONVERSATION_HISTORY[user_id]
         return []
-    return entry["messages"]
+    # Filter out system messages to avoid duplication
+    return [m for m in entry["messages"] if m.get("role") != "system"]
 
 
 def _save_history(user_id: str, messages: list[dict]):
-    trimmed = messages[-MAX_HISTORY_MESSAGES:]
+    # Filter out system messages before saving to avoid duplication
+    filtered = [m for m in messages if m.get("role") != "system"]
+    trimmed = filtered[-MAX_HISTORY_MESSAGES:]
     CONVERSATION_HISTORY[user_id] = {
         "messages": trimmed,
         "timestamp": time.time()

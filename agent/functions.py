@@ -537,60 +537,75 @@ def get_student_progress(assignment_id: str) -> dict:
 # ============================================================
 
 def list_announcements(user_id: str = None, user_role: str = None, page: int = 1, page_size: int = 20) -> dict:
-    query = {"isDeleted": {"$ne": True}}
-    if user_id and user_role:
-        role_upper = user_role.upper()
-        # Filter by audience
-        query["$or"] = [
-            {"audience": "BOTH"},
-            {"audience": role_upper}
-        ]
-        # For students, also filter by trackScope
-        if role_upper == "STUDENT":
-            # Get student's track names from enrollments
-            enrollments = list(get_collection("studenttrackenrollments").find(
-                {"studentId": ObjectId(user_id), "status": {"$in": ["ACTIVE", "ENROLLED"]}},
-                {"trackSessionConfigId": 1}
-            ))
-            track_config_ids = [e["trackSessionConfigId"] for e in enrollments if "trackSessionConfigId" in e]
+    try:
+        # Ensure page/page_size are valid integers
+        page = max(1, int(page)) if page else 1
+        page_size = min(max(1, int(page_size)) if page_size else 20, 100)
 
-            # Get track names from configs
-            track_names = []
-            if track_config_ids:
-                configs = list(get_collection("tracksessionconfigs").find(
-                    {"_id": {"$in": track_config_ids}},
-                    {"trackId": 1}
+        query = {"isDeleted": {"$ne": True}}
+
+        if user_id and user_role:
+            role_upper = str(user_role).upper()
+            # Filter by audience
+            query["$or"] = [
+                {"audience": "BOTH"},
+                {"audience": role_upper}
+            ]
+            # For students, also filter by trackScope
+            if role_upper == "STUDENT":
+                # Get student's track names from enrollments
+                enrollments = list(get_collection("studenttrackenrollments").find(
+                    {"studentId": ObjectId(user_id), "status": {"$in": ["ACTIVE", "ENROLLED"]}},
+                    {"trackSessionConfigId": 1}
                 ))
-                track_ids = [c["trackId"] for c in configs if "trackId" in c]
-                if track_ids:
-                    tracks = list(get_collection("tracks").find(
-                        {"_id": {"$in": track_ids}},
-                        {"name": 1}
+                track_config_ids = [e["trackSessionConfigId"] for e in enrollments if "trackSessionConfigId" in e]
+
+                # Get track names from configs
+                track_names = []
+                if track_config_ids:
+                    configs = list(get_collection("tracksessionconfigs").find(
+                        {"_id": {"$in": track_config_ids}},
+                        {"trackId": 1}
                     ))
-                    track_names = [t["name"] for t in tracks if "name" in t]
+                    track_ids = [c["trackId"] for c in configs if "trackId" in c]
+                    if track_ids:
+                        tracks = list(get_collection("tracks").find(
+                            {"_id": {"$in": track_ids}},
+                            {"name": 1}
+                        ))
+                        track_names = [t["name"] for t in tracks if "name" in t]
 
-            # Add trackScope filter
-            if track_names:
-                query["$and"] = [
-                    {"$or": [
-                        {"trackScope": "ALL_TRACKS"},
-                        {"trackScope": "SELECTED_TRACKS", "targetTrackNames": {"$in": track_names}},
-                        {"trackScope": {"$exists": False}}
-                    ]}
-                ]
-            else:
-                # No enrollments — only show ALL_TRACKS or unspecified
-                query["$and"] = [
-                    {"$or": [
-                        {"trackScope": "ALL_TRACKS"},
-                        {"trackScope": {"$exists": False}}
-                    ]}
-                ]
+                # Add trackScope filter
+                if track_names:
+                    query["$and"] = [
+                        {"$or": [
+                            {"trackScope": "ALL_TRACKS"},
+                            {"trackScope": "SELECTED_TRACKS", "targetTrackNames": {"$in": track_names}},
+                            {"trackScope": {"$exists": False}}
+                        ]}
+                    ]
+                else:
+                    # No enrollments — only show ALL_TRACKS or unspecified
+                    query["$and"] = [
+                        {"$or": [
+                            {"trackScope": "ALL_TRACKS"},
+                            {"trackScope": {"$exists": False}}
+                        ]}
+                    ]
 
-    total = get_collection("announcements").count_documents(query)
-    skip = (page - 1) * page_size
-    items = list(get_collection("announcements").find(query).skip(skip).limit(page_size).sort("createdAt", -1))
-    return {"items": _serialize(items), "total": total, "page": page, "pageSize": page_size}
+        total = get_collection("announcements").count_documents(query)
+        skip = (page - 1) * page_size
+        items = list(get_collection("announcements").find(query).skip(skip).limit(page_size).sort("createdAt", -1))
+        return {"items": _serialize(items), "total": total, "page": page, "pageSize": page_size}
+    except Exception as e:
+        # Fallback: return all non-deleted announcements without filtering
+        try:
+            fallback_query = {"isDeleted": {"$ne": True}}
+            total = get_collection("announcements").count_documents(fallback_query)
+            items = list(get_collection("announcements").find(fallback_query).limit(20).sort("createdAt", -1))
+            return {"items": _serialize(items), "total": total, "page": 1, "pageSize": 20, "warning": f"Filtered query failed: {str(e)}"}
+        except Exception:
+            return {"items": [], "total": 0, "page": 1, "pageSize": 20, "error": str(e)}
 
 
 def get_announcement(announcement_id: str) -> dict:

@@ -540,10 +540,10 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
     """
     List announcements for a user.
 
-    Uses a two-path query:
-    1. Primary: user is in the denormalized recipientStatuses array (web-app created announcements).
-    2. Fallback: announcement has empty/missing recipientStatuses (WA-agent created) AND
-       matches the user's audience and track scope (ALL_TRACKS for students, etc.).
+    Uses a multi-path query to handle all scenarios:
+    1. User is in the denormalized recipientStatuses array (web-app created).
+    2. Announcement has empty/missing recipientStatuses (WA-agent created).
+    3. ALL_TRACKS announcement where user enrolled after creation.
     """
     try:
         page = max(1, int(page)) if page else 1
@@ -552,13 +552,18 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
         if user_id:
             user_oid = ObjectId(user_id)
             role_upper = (user_role or "STUDENT").upper()
+            # Normalize to match DB audience format (STUDENT -> STUDENTS, MENTOR -> MENTORS)
+            if role_upper == "STUDENT":
+                role_upper = "STUDENTS"
+            elif role_upper == "MENTOR":
+                role_upper = "MENTORS"
 
             query = {
                 "$or": [
                     # Path 1: user is in the denormalized recipient list
                     {"recipientStatuses.userId": user_oid},
-                    # Path 2: announcement has no recipients populated (created via WA agent
-                    # or before the student enrolled) AND matches audience + track scope
+                    # Path 2: announcement has no recipients populated (WA agent created)
+                    # AND matches audience + ALL_TRACKS scope
                     {
                         "recipientStatuses": {"$exists": True, "$size": 0},
                         "audience": {"$in": [role_upper, "BOTH"]},
@@ -569,6 +574,13 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
                         "recipientStatuses": {"$exists": False},
                         "audience": {"$in": [role_upper, "BOTH"]},
                         "trackScope": "ALL_TRACKS",
+                    },
+                    # Path 4: ALL_TRACKS announcement where user enrolled after creation
+                    # (user is NOT in recipientStatuses but should see it)
+                    {
+                        "audience": {"$in": [role_upper, "BOTH"]},
+                        "trackScope": "ALL_TRACKS",
+                        "recipientStatuses.userId": {"$ne": user_oid},
                     },
                 ]
             }

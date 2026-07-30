@@ -58,6 +58,313 @@ def _serialize(doc):
 
 
 # ============================================================
+# USER CONTEXT (for system prompt enrichment)
+# ============================================================
+
+def get_user_context(user_id: str, role: str = None) -> str:
+    """Build role-specific context string with pre-fetched user data."""
+    if not role:
+        user = get_collection("users").find_one({"_id": ObjectId(user_id)})
+        role = (user.get("roles") or ["STUDENT"])[0] if user else "STUDENT"
+    
+    cache_key = f"context:{user_id}:{role}"
+    cached = _get_cache(cache_key)
+    if cached is not None:
+        return cached
+    
+    if role == "STUDENT":
+        result = _build_student_context(user_id)
+    elif role == "MENTOR":
+        result = _build_mentor_context(user_id)
+    elif role == "ADMIN":
+        result = _build_admin_context(user_id)
+    else:
+        result = ""
+    
+    _set_cache(cache_key, result)
+    return result
+
+
+def _build_student_context(user_id: str) -> str:
+    """Build comprehensive context for student role."""
+    lines = ["## Your Info"]
+    
+    # User info
+    user = get_collection("users").find_one({"_id": ObjectId(user_id)})
+    if user:
+        lines.append(f"- User ID: {user_id}")
+        lines.append(f"- Name: {user.get('name', 'Unknown')}")
+        lines.append(f"- Email: {user.get('email', 'N/A')}")
+        lines.append(f"- Roll Number: {user.get('rollNumber', 'N/A')}")
+        lines.append(f"- Programme: {user.get('programme', 'N/A')}")
+        lines.append(f"- Section: {user.get('section', 'N/A')}")
+        lines.append(f"- Year: {user.get('studentYear', 'N/A')}")
+    
+    # Active enrollment
+    enrollment = get_collection("studenttrackenrollments").find_one(
+        {"studentId": ObjectId(user_id), "status": {"$in": ["ACTIVE", "ENROLLED", "PENDING_ONBOARDING"]}},
+        sort=[("startedAt", -1)]
+    )
+    
+    if enrollment:
+        lines.append("\n## Your Enrollment")
+        lines.append(f"- Status: {enrollment.get('status')}")
+        
+        session = get_collection("academicyears").find_one({"_id": enrollment["sessionId"]})
+        track = get_collection("tracksessionconfigs").find_one({"_id": enrollment["trackSessionConfigId"]})
+        
+        if session:
+            lines.append(f"- Session: {session.get('name', str(enrollment['sessionId']))} (ID: {str(enrollment['sessionId'])})")
+        if track:
+            lines.append(f"- Track: {track.get('name', str(enrollment['trackSessionConfigId']))} (ID: {str(enrollment['trackSessionConfigId'])})")
+            lines.append(f"- Track Mode: {track.get('mode', 'UNKNOWN')}")
+        lines.append(f"- Enrollment ID: {str(enrollment['_id'])}")
+        lines.append(f"- Onboarding: {'Completed' if enrollment.get('isOnboardingSubmitted') else 'Pending'}")
+        
+        # Team membership
+        team = get_collection("teams").find_one({"memberIds": ObjectId(user_id)})
+        if team:
+            lines.append("\n## Your Team")
+            lines.append(f"- Team: {team.get('name', 'Unnamed')} (ID: {str(team['_id'])})")
+            leader_id = team.get("leaderId")
+            lines.append(f"- Role: {'Leader' if str(leader_id) == user_id else 'Member'}")
+            member_ids = team.get("memberIds", [])
+            if len(member_ids) > 1:
+                member_docs = list(get_collection("users").find({"_id": {"$in": member_ids}}))
+                lines.append("- Members:")
+                for m in member_docs:
+                    role_label = "Leader" if str(m["_id"]) == str(leader_id) else "Member"
+                    lines.append(f"  - {m.get('name', 'Unknown')} (ID: {str(m['_id'])}) — {role_label}")
+        
+        # Mentor
+        assignment = get_collection("enrollmentmentorassignments").find_one(
+            {"studentId": ObjectId(user_id), "isActive": True},
+            sort=[("assignedAt", -1)]
+        )
+        if assignment:
+            mentor = get_collection("users").find_one({"_id": assignment["mentorId"]})
+            if mentor:
+                lines.append("\n## Your Mentor")
+                lines.append(f"- {mentor.get('name', 'Unknown')} (ID: {str(mentor['_id'])})")
+                lines.append(f"- Email: {mentor.get('email', 'N/A')}")
+                lines.append(f"- Phone: {mentor.get('mobileNumber', 'N/A')}")
+        
+        # Track criteria
+        if track:
+            components = track.get("assessmentComponents", [])
+            active_components = [c for c in components if c.get("isActive")]
+            if active_components:
+                lines.append(f"\n## Your Track Criteria ({track.get('name', 'Track')})")
+                ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": enrollment["_id"]}))
+                for comp in active_components:
+                    comp_type = comp.get("type")
+                    comp_title = comp.get("title", comp_type)
+                    max_marks = comp.get("maxMarks", 0)
+                    # Sum marks from ledger for this component
+                    comp_marks = sum(l.get("marksAwarded", 0) for l in ledger if l.get("assessmentComponentId") == comp["_id"])
+                    percentage = round(comp_marks / max_marks * 100, 1) if max_marks > 0 else 0
+                    lines.append(f"- {comp_title}: {comp_marks}/{max_marks} ({percentage}%)")
+                
+                # Total
+                total_awarded = sum(c.get("marksAwarded", 0) for c in ledger)
+                total_max = sum(c.get("maxMarks", 0) for c in active_components)
+                total_pct = round(total_awarded / total_max * 100, 1) if total_max > 0 else 0
+                lines.append(f"- **Total: {total_awarded}/{total_max} ({total_pct}%)**")
+        
+        # Documents
+        docs = list(get_collection("trackonboardingsubmissions").find({"studentId": ObjectId(user_id)}))
+        if docs:
+            lines.append("\n## Your Documents")
+            approved = sum(1 for d in docs if d.get("status") == "APPROVED")
+            pending = sum(1 for d in docs if d.get("status") == "SUBMITTED")
+            rejected = sum(1 for d in docs if d.get("status") == "REJECTED")
+            lines.append(f"- Total: {len(docs)} | Approved: {approved} | Pending: {pending} | Rejected: {rejected}")
+        
+        # Interactions
+        interactions = list(get_collection("mentorstudentinteractions").find({"studentId": ObjectId(user_id)}))
+        if interactions:
+            lines.append("\n## Your Interactions")
+            completed = sum(1 for i in interactions if i.get("status") == "COMPLETED")
+            pending = sum(1 for i in interactions if i.get("status") in ("PENDING", "SCHEDULED"))
+            lines.append(f"- Total: {len(interactions)} | Completed: {completed} | Pending: {pending}")
+        
+        # Attendance
+        attendance = list(get_collection("studentattendances").find({"studentId": ObjectId(user_id)}))
+        if attendance:
+            lines.append("\n## Your Attendance")
+            present = sum(1 for a in attendance if a.get("status") == "PRESENT")
+            total = len(attendance)
+            pct = round(present / total * 100, 1) if total > 0 else 0
+            lines.append(f"- Delivered: {total} | Present: {present} | Absent: {total - present} | Percentage: {pct}%")
+    else:
+        lines.append("\nNo active enrollment found")
+    
+    return "\n".join(lines)
+
+
+def _build_mentor_context(user_id: str) -> str:
+    """Build comprehensive context for mentor role."""
+    lines = ["## Your Info"]
+    
+    # User info
+    user = get_collection("users").find_one({"_id": ObjectId(user_id)})
+    if user:
+        lines.append(f"- User ID: {user_id}")
+        lines.append(f"- Name: {user.get('name', 'Unknown')}")
+        lines.append(f"- Email: {user.get('email', 'N/A')}")
+        lines.append(f"- Phone: {user.get('mobileNumber', 'N/A')}")
+    
+    # Get active session
+    session = get_collection("academicyears").find_one({"isActive": True})
+    if session:
+        lines.append(f"\n## Your Current Session")
+        lines.append(f"- Session: {session.get('name', 'Unknown')} (ID: {str(session['_id'])})")
+    
+    # Get assigned students
+    assignments = list(get_collection("enrollmentmentorassignments").find(
+        {"mentorId": ObjectId(user_id), "isActive": True}
+    ).sort("assignedAt", -1))
+    
+    if assignments:
+        lines.append(f"\n## Your Assigned Students ({len(assignments)})")
+        lines.append("| Name | ID | Enrollment ID | Track | Status |")
+        lines.append("|------|-----|---------------|-------|--------|")
+        
+        track_counts = {}
+        for a in assignments:
+            student = get_collection("users").find_one({"_id": a["studentId"]})
+            enrollment = get_collection("studenttrackenrollments").find_one({"_id": a["enrollmentId"]})
+            if student and enrollment:
+                track = get_collection("tracksessionconfigs").find_one({"_id": enrollment["trackSessionConfigId"]})
+                track_name = track.get("name", "Unknown") if track else "Unknown"
+                lines.append(f"| {student.get('name', 'Unknown')} | {str(student['_id'])} | {str(enrollment['_id'])} | {track_name} | {enrollment.get('status')} |")
+                track_counts[track_name] = track_counts.get(track_name, 0) + 1
+        
+        # Track summary
+        if track_counts:
+            lines.append("\n## Your Assigned Tracks")
+            for track_name, count in track_counts.items():
+                lines.append(f"- {track_name}: {count} students")
+        
+        # Track criteria flags
+        track_configs = list(get_collection("tracksessionconfigs").find(
+            {"_id": {"$in": [a.get("trackSessionConfigId") for a in assignments if a.get("trackSessionConfigId")]}}
+        ))
+        if track_configs:
+            lines.append("\n## Track Criteria Flags")
+            for tc in track_configs:
+                components = tc.get("assessmentComponents", [])
+                has_interactions = len(tc.get("interactionTemplates", [])) > 0
+                has_attendance = any(c.get("type") == "ATTENDANCE" and c.get("isActive") for c in components)
+                has_evaluations = any(c.get("type") in ("MENTOR_EVALUATION", "FINAL_YEAR_MENTOR_EVALUATION") and c.get("isActive") for c in components)
+                has_doc_reviews = any(c.get("type") == "DOCUMENT" and c.get("isActive") for c in components)
+                lines.append(f"- {tc.get('name', 'Track')}: hasInteractions={has_interactions}, hasAttendance={has_attendance}, hasEvaluations={has_evaluations}, hasDocumentReviews={has_doc_reviews}")
+        
+        # Pending work
+        lines.append("\n## Pending Work")
+        pending_interactions = 0
+        pending_evaluations = 0
+        pending_docs = 0
+        for a in assignments:
+            interactions = list(get_collection("mentorstudentinteractions").find({"enrollmentId": a["enrollmentId"], "status": {"$in": ["PENDING", "SCHEDULED"]}}))
+            pending_interactions += len(interactions)
+            evaluations = list(get_collection("mentorevaluationscores").find({"enrollmentId": a["enrollmentId"]}))
+            pending_evaluations += max(0, len(assignments) - len(evaluations))
+            docs = list(get_collection("trackonboardingsubmissions").find({"enrollmentId": a["enrollmentId"], "status": "SUBMITTED"}))
+            pending_docs += len(docs)
+        
+        lines.append(f"- Pending Interactions: {pending_interactions}")
+        lines.append(f"- Pending Evaluations: {pending_evaluations}")
+        lines.append(f"- Pending Document Reviews: {pending_docs}")
+    else:
+        lines.append("\nNo assigned students found")
+    
+    return "\n".join(lines)
+
+
+def _build_admin_context(user_id: str) -> str:
+    """Build comprehensive context for admin role."""
+    lines = ["## Your Info"]
+    
+    # User info
+    user = get_collection("users").find_one({"_id": ObjectId(user_id)})
+    if user:
+        lines.append(f"- User ID: {user_id}")
+        lines.append(f"- Name: {user.get('name', 'Unknown')}")
+        lines.append(f"- Email: {user.get('email', 'N/A')}")
+    
+    # Active session
+    session = get_collection("academicyears").find_one({"isActive": True})
+    if session:
+        lines.append(f"\n## Active Session")
+        lines.append(f"- Session: {session.get('name', 'Unknown')} (ID: {str(session['_id'])})")
+        lines.append(f"- Status: Active")
+    
+    # Quick stats
+    lines.append("\n## Quick Stats")
+    total_students = get_collection("users").count_documents({"roles": "STUDENT", "isActive": True})
+    total_mentors = get_collection("users").count_documents({"roles": "MENTOR", "isActive": True})
+    enabled_tracks = get_collection("tracksessionconfigs").count_documents({"isEnabled": True})
+    pending_onboarding = get_collection("trackonboardingsubmissions").count_documents({"status": "SUBMITTED"})
+    lines.append(f"- Total Students: {total_students}")
+    lines.append(f"- Total Mentors: {total_mentors}")
+    lines.append(f"- Enabled Tracks: {enabled_tracks}")
+    lines.append(f"- Pending Onboarding Reviews: {pending_onboarding}")
+    
+    # Track breakdown
+    if session:
+        enrollments = list(get_collection("studenttrackenrollments").find({"sessionId": session["_id"]}))
+        track_counts = {}
+        for e in enrollments:
+            track = get_collection("tracksessionconfigs").find_one({"_id": e["trackSessionConfigId"]})
+            track_name = track.get("name", "Unknown") if track else "Unknown"
+            if track_name not in track_counts:
+                track_counts[track_name] = {"active": 0, "pending": 0, "inactive": 0}
+            status = e.get("status", "")
+            if status in ("ACTIVE", "ENROLLED"):
+                track_counts[track_name]["active"] += 1
+            elif status == "PENDING_ONBOARDING":
+                track_counts[track_name]["pending"] += 1
+            elif status == "INACTIVE":
+                track_counts[track_name]["inactive"] += 1
+        
+        if track_counts:
+            lines.append("\n## Track Breakdown")
+            for track_name, counts in track_counts.items():
+                total = counts["active"] + counts["pending"] + counts["inactive"]
+                lines.append(f"- {track_name}: {total} students ({counts['active']} active, {counts['pending']} pending, {counts['inactive']} inactive)")
+    
+    # Interaction analytics
+    interactions = list(get_collection("mentorstudentinteractions").find({}))
+    if interactions:
+        lines.append("\n## Interaction Analytics")
+        completed = sum(1 for i in interactions if i.get("status") == "COMPLETED")
+        pending = sum(1 for i in interactions if i.get("status") in ("PENDING", "SCHEDULED"))
+        missed = sum(1 for i in interactions if i.get("status") == "MISSED")
+        total = len(interactions)
+        lines.append(f"- Total Interactions: {total}")
+        lines.append(f"- Completed: {completed} ({round(completed/total*100, 1) if total > 0 else 0}%)")
+        lines.append(f"- Pending: {pending} ({round(pending/total*100, 1) if total > 0 else 0}%)")
+        lines.append(f"- Missed: {missed} ({round(missed/total*100, 1) if total > 0 else 0}%)")
+    
+    # Attendance overview
+    attendance = list(get_collection("studentattendances").find({}))
+    if attendance:
+        lines.append("\n## Attendance Overview")
+        present = sum(1 for a in attendance if a.get("status") == "PRESENT")
+        total = len(attendance)
+        pct = round(present / total * 100, 1) if total > 0 else 0
+        lines.append(f"- Average Attendance Rate: {pct}%")
+    
+    # Faculty summary
+    mentors_with_assignments = get_collection("enrollmentmentorassignments").distinct("mentorId", {"isActive": True})
+    lines.append("\n## Faculty Summary")
+    lines.append(f"- Active Mentors with Assignments: {len(mentors_with_assignments)}")
+    
+    return "\n".join(lines)
+
+
+# ============================================================
 # USER FUNCTIONS
 # ============================================================
 
@@ -209,11 +516,15 @@ def mark_attendance(enrollment_id: str, date_key: str, status: str, session: str
     if not enrollment:
         return {"error": "Enrollment not found"}
 
+    # Look up trackId from tracksessionconfigs
+    track_config = get_collection("tracksessionconfigs").find_one({"_id": enrollment["trackSessionConfigId"]})
+    track_id = track_config.get("trackId") if track_config else None
+
     record = {
         "enrollmentId": ObjectId(enrollment_id),
         "studentId": enrollment["studentId"],
         "trackSessionConfigId": enrollment["trackSessionConfigId"],
-        "trackId": enrollment.get("trackId"),
+        "trackId": track_id,
         "sessionId": enrollment["sessionId"],
         "dateKey": date_key,
         "attendanceSession": session,
@@ -484,10 +795,16 @@ def create_interaction(enrollment_id: str, mentor_id: str, title: str, interacti
     if not enrollment:
         return {"error": "Enrollment not found"}
 
+    # Look up the assignment ID
+    assignment = get_collection("enrollmentmentorassignments").find_one(
+        {"enrollmentId": ObjectId(enrollment_id), "mentorId": ObjectId(mentor_id), "isActive": True}
+    )
+    assignment_id = assignment["_id"] if assignment else None
+
     record = {
         "sessionId": enrollment["sessionId"],
         "enrollmentId": ObjectId(enrollment_id),
-        "assignmentId": None,
+        "assignmentId": assignment_id,
         "trackSessionConfigId": enrollment["trackSessionConfigId"],
         "studentId": enrollment["studentId"],
         "mentorId": ObjectId(mentor_id),
@@ -805,12 +1122,14 @@ def create_notification(user_id: str, title: str, message: str, notif_type: str,
 # TEAM FUNCTIONS
 # ============================================================
 
-def list_teams(session_id: str = None, track_config_id: str = None) -> list:
+def list_teams(session_id: str = None, track_config_id: str = None, member_id: str = None) -> list:
     query = {}
     if session_id:
         query["sessionId"] = ObjectId(session_id)
     if track_config_id:
         query["trackSessionConfigId"] = ObjectId(track_config_id)
+    if member_id:
+        query["memberIds"] = ObjectId(member_id)
     return _serialize(list(get_collection("teams").find(query)))
 
 
@@ -921,6 +1240,107 @@ def get_submissions(enrollment_id: str = None, status: str = None, kind: str = N
     if kind:
         query["submissionKind"] = kind
     return _serialize(list(get_collection("trackonboardingsubmissions").find(query).sort("submittedAt", -1)))
+
+
+# ============================================================
+# STUDENT READ-ONLY DATA ACCESS
+# ============================================================
+
+def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
+    """Get document submissions for a student (read-only)."""
+    query = {"studentId": ObjectId(student_id)}
+    if enrollment_id:
+        query["enrollmentId"] = ObjectId(enrollment_id)
+    submissions = list(get_collection("trackonboardingsubmissions").find(query).sort("submittedAt", -1))
+    return _serialize(submissions)
+
+
+def get_student_document_summary(student_id: str, enrollment_id: str = None) -> dict:
+    """Get document submission summary for a student."""
+    docs = get_student_documents(student_id, enrollment_id)
+    summary = {
+        "total": len(docs),
+        "approved": sum(1 for d in docs if d.get("status") == "APPROVED"),
+        "pending": sum(1 for d in docs if d.get("status") == "SUBMITTED"),
+        "rejected": sum(1 for d in docs if d.get("status") == "REJECTED"),
+        "draft": sum(1 for d in docs if d.get("status") == "DRAFT"),
+        "documents": []
+    }
+    for doc in docs:
+        summary["documents"].append({
+            "id": str(doc["_id"]),
+            "kind": doc.get("submissionKind"),
+            "status": doc.get("status"),
+            "submittedAt": doc.get("submittedAt"),
+            "reviewedAt": doc.get("reviewedAt"),
+            "reviewComment": doc.get("reviewComment"),
+            "files": doc.get("files", []),
+            "rejectionItems": doc.get("rejectionItems", [])
+        })
+    return summary
+
+
+def get_student_attendance_detail(student_id: str, enrollment_id: str = None) -> dict:
+    """Get detailed attendance for a student."""
+    query = {"studentId": ObjectId(student_id)}
+    if enrollment_id:
+        query["enrollmentId"] = ObjectId(enrollment_id)
+    records = list(get_collection("studentattendances").find(query).sort("dateKey", -1))
+    
+    present = sum(1 for r in records if r.get("status") == "PRESENT")
+    total = len(records)
+    percentage = (present / total * 100) if total > 0 else 0
+    
+    return {
+        "totalSlots": total,
+        "present": present,
+        "absent": total - present,
+        "percentage": round(percentage, 1),
+        "recentRecords": _serialize(records[:10])  # Last 10 records
+    }
+
+
+def get_student_interactions_detail(student_id: str, enrollment_id: str = None) -> dict:
+    """Get interaction details for a student."""
+    query = {"studentId": ObjectId(student_id)}
+    if enrollment_id:
+        query["enrollmentId"] = ObjectId(enrollment_id)
+    interactions = list(get_collection("mentorstudentinteractions").find(query).sort("scheduledAt", -1))
+    
+    completed = [i for i in interactions if i.get("status") == "COMPLETED"]
+    pending = [i for i in interactions if i.get("status") in ("PENDING", "SCHEDULED")]
+    
+    return {
+        "total": len(interactions),
+        "completed": len(completed),
+        "pending": len(pending),
+        "interactions": _serialize(interactions[:5])  # Last 5 interactions
+    }
+
+
+def get_student_score_summary(student_id: str, enrollment_id: str = None) -> dict:
+    """Get score summary for a student."""
+    query = {"studentId": ObjectId(student_id)}
+    if enrollment_id:
+        query["enrollmentId"] = ObjectId(enrollment_id)
+    ledger = list(get_collection("enrollmentscoreledgers").find(query))
+    
+    by_component = {}
+    for entry in ledger:
+        comp_type = entry.get("componentType", "UNKNOWN")
+        if comp_type not in by_component:
+            by_component[comp_type] = {"marksAwarded": 0, "maxMarks": 0}
+        by_component[comp_type]["marksAwarded"] += entry.get("marksAwarded", 0)
+        by_component[comp_type]["maxMarks"] += entry.get("maxMarks", 0)
+    
+    total_awarded = sum(c["marksAwarded"] for c in by_component.values())
+    total_max = sum(c["maxMarks"] for c in by_component.values())
+    percentage = (total_awarded / total_max * 100) if total_max > 0 else 0
+    
+    return {
+        "total": {"marksAwarded": total_awarded, "maxMarks": total_max, "percentage": round(percentage, 1)},
+        "byComponent": by_component
+    }
 
 
 def submit_intake_form(enrollment_id: str, template_id: str, responses: dict) -> dict:
@@ -1253,8 +1673,8 @@ FUNCTIONS = {
         "collection": "notifications"
     },
     "list_teams": {
-        "description": "List teams for a session, optionally filtered by track config",
-        "params": {"session_id": "string (optional)", "track_config_id": "string (optional)"},
+        "description": "List teams for a session, optionally filtered by track config or member",
+        "params": {"session_id": "string (optional)", "track_config_id": "string (optional)", "member_id": "string (optional)"},
         "handler": list_teams,
         "permission": "read",
         "collection": "teams"
@@ -1328,6 +1748,41 @@ FUNCTIONS = {
         "handler": list_academic_years,
         "permission": "read",
         "collection": "academicyears"
+    },
+    "get_student_documents": {
+        "description": "Get document submissions for a student (read-only)",
+        "params": {"student_id": "string", "enrollment_id": "string (optional)"},
+        "handler": get_student_documents,
+        "permission": "read",
+        "collection": "trackonboardingsubmissions"
+    },
+    "get_student_document_summary": {
+        "description": "Get document submission summary for a student (approved/pending/rejected counts)",
+        "params": {"student_id": "string", "enrollment_id": "string (optional)"},
+        "handler": get_student_document_summary,
+        "permission": "read",
+        "collection": "trackonboardingsubmissions"
+    },
+    "get_student_attendance_detail": {
+        "description": "Get detailed attendance for a student (present/absent/percentage)",
+        "params": {"student_id": "string", "enrollment_id": "string (optional)"},
+        "handler": get_student_attendance_detail,
+        "permission": "read",
+        "collection": "studentattendances"
+    },
+    "get_student_interactions_detail": {
+        "description": "Get interaction details for a student (completed/pending counts)",
+        "params": {"student_id": "string", "enrollment_id": "string (optional)"},
+        "handler": get_student_interactions_detail,
+        "permission": "read",
+        "collection": "mentorstudentinteractions"
+    },
+    "get_student_score_summary": {
+        "description": "Get score summary for a student (marks by component type)",
+        "params": {"student_id": "string", "enrollment_id": "string (optional)"},
+        "handler": get_student_score_summary,
+        "permission": "read",
+        "collection": "enrollmentscoreledgers"
     }
 }
 

@@ -7,7 +7,7 @@ Create, join, invite, respond to team invitations. Use when query involves team,
 
 | Function | Description | Params | Returns | Write? |
 |----------|-------------|--------|---------|--------|
-| `list_teams` | List teams for session | `sessionId: string, trackSessionConfigId?: string` | `Team[]` | No |
+| `list_teams` | List teams for session | `sessionId?: string, trackSessionConfigId?: string, memberId?: string` | `Team[]` | No |
 | `get_team` | Get team details | `teamId: string` | `Team` | No |
 | `create_team` | Create new team | `teamData: { name, leaderId, sessionId, trackSessionConfigId }` | `Team` | Yes |
 | `join_team` | Join via invite code | `inviteCode: string, studentId: string` | `Team` | Yes |

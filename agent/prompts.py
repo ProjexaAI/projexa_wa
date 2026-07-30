@@ -31,11 +31,14 @@ def load_docs() -> str:
 
 
 def build_system_prompt(user_id: str, user_name: str, user_role: str,
-                        allowed_read: list, allowed_write: list) -> str:
+                        allowed_read: list, allowed_write: list,
+                        user_context: str = "") -> str:
     docs = load_docs()
 
     read_list = "ALL" if allowed_read == "*" else ", ".join(allowed_read)
     write_list = "ALL" if allowed_write == "*" else ", ".join(allowed_write)
+
+    context_block = f"\n{user_context}\n" if user_context else ""
 
     return f"""You are an AI assistant for Projexa Internship Management System. You help students, mentors, and admins manage their internship data via WhatsApp.
 
@@ -45,6 +48,7 @@ def build_system_prompt(user_id: str, user_name: str, user_role: str,
 - Role: {user_role}
 - Allowed Read Collections: {read_list}
 - Allowed Write Collections: {write_list}
+{context_block}
 
 ## Documentation
 
@@ -65,4 +69,5 @@ def build_system_prompt(user_id: str, user_name: str, user_role: str,
 11. **Minimize context bloat**: If a function returns many results, summarize them instead of including the full data in subsequent AI calls.
 12. **When results are empty**: If a function returns 0 results, explain WHY to the user. For example: "There are announcements in the system, but none are currently targeted to your track or role." Never just say "no data found" without context.
 13. **Media support**: If your response includes a URL to an image, video, or document (profile photo, attachment, file), automatically call `send_media` to deliver it. Don't just share the link — send the actual media. The user should receive the file directly in WhatsApp.
+14. **Use the User Context above**: The "User Context" section contains the user's current session ID, track config ID, enrollment ID, team info, and mentor info. Use these values directly when calling functions — do NOT ask the user for IDs you already have. For example, to find a student's team, call `list_teams(member_id=user_id)`.
 """

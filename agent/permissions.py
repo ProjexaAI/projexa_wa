@@ -13,12 +13,12 @@ ROLE_PERMISSIONS = {
             "studentattendances", "tracks", "tracksessionconfigs",
             "mentorstudentinteractions", "mentorinteractionsessions",
             "studentprogresses", "mentorevaluationscores",
-            "notifications", "announcements"
+            "announcements"
         ],
         "write": [
             "studentattendances", "mentorstudentinteractions",
             "mentorinteractionsessions", "mentorevaluationscores",
-            "studentprogresses", "notifications"
+            "studentprogresses"
         ]
     },
     "STUDENT": {
@@ -26,7 +26,9 @@ ROLE_PERMISSIONS = {
             "users", "tracks", "tracksessionconfigs", "studenttrackenrollments",
             "studentattendances", "mentorstudentinteractions",
             "enrollmentmentorassignments", "enrollmentscoreledgers",
-            "notifications", "announcements", "teams", "teaminvitations"
+            "trackonboardingsubmissions", "mentorinteractionsessions",
+            "mentorevaluationscores", "trackevaluationevents",
+            "announcements", "teams", "teaminvitations"
         ],
         "write": [
             "teams", "teaminvitations"

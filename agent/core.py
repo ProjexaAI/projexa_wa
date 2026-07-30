@@ -3,7 +3,7 @@ import time
 from openai import OpenAI
 from config import OPENCODE_API_KEY, OPENCODE_MODEL, OPENCODE_BASE_URL
 from agent.prompts import build_system_prompt
-from agent.functions import FUNCTIONS, execute_function
+from agent.functions import FUNCTIONS, execute_function, get_user_context
 from agent.query_validator import validate_query, TIMEOUT_SECONDS
 from agent.summarizer import summarize_result
 from agent.db import get_collection
@@ -315,12 +315,16 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
     allowed_read = allowed["read"]
     allowed_write = allowed["write"]
 
+    # Fetch user's enrollment, team, and mentor context
+    user_ctx = get_user_context(user_id, user_role)
+
     system_prompt = build_system_prompt(
         user_id=user_id,
         user_name=user_name,
         user_role=user_role,
         allowed_read=allowed_read,
-        allowed_write=allowed_write
+        allowed_write=allowed_write,
+        user_context=user_ctx
     )
 
     # Load prior conversation history
@@ -351,6 +355,9 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             _save_history(user_id, messages + [
                 {"role": "assistant", "content": final_text}
             ])
+            # Don't return text when media is present — media message is sufficient
+            if pending_media:
+                return {"text": "", "media": pending_media}
             return {"text": final_text, "media": pending_media}
 
         # Process tool calls

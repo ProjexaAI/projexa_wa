@@ -1318,7 +1318,7 @@ def get_student_document_summary(student_id: str, enrollment_id: str = None) -> 
         files_info = []
         for f in doc.get("files", []):
             files_info.append({
-                "url": f.get("fileUrl"),
+                "url": f.get("url"),
                 "fileName": f.get("fileName"),
                 "fileSizeBytes": f.get("fileSizeBytes"),
                 "contentType": f.get("contentType")

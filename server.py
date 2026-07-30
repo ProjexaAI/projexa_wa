@@ -71,7 +71,7 @@ async def send_whatsapp_document(phone: str, file_path: str, caption: str = "", 
         filename = file_path.split("/")[-1].split("?")[0] or "document.pdf"
         payload = {
             "chatId": chat_id or f"{phone}@c.us",
-            "file": file_path,
+            "document": file_path,
             "filename": filename,
             "caption": caption
         }
@@ -85,11 +85,10 @@ async def send_whatsapp_image(phone: str, file_path: str, caption: str = "", cha
     async with httpx.AsyncClient(timeout=30.0) as client:
         url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/messages/send-image"
         headers = {"Content-Type": "application/json", "X-API-Key": OPENWA_API_KEY}
-        # Extract filename from URL or use default
         filename = file_path.split("/")[-1].split("?")[0] or "image.jpg"
         payload = {
             "chatId": chat_id or f"{phone}@c.us",
-            "file": file_path,
+            "image": file_path,
             "filename": filename,
             "caption": caption
         }
@@ -106,7 +105,7 @@ async def send_whatsapp_video(phone: str, file_path: str, caption: str = "", cha
         filename = file_path.split("/")[-1].split("?")[0] or "video.mp4"
         payload = {
             "chatId": chat_id or f"{phone}@c.us",
-            "file": file_path,
+            "video": file_path,
             "filename": filename,
             "caption": caption
         }

@@ -189,6 +189,40 @@ def execute_custom_query(params: dict, user_role: str, allowed_read: list) -> di
         return {"error": str(e)}
 
 
+def _get_message_role(msg) -> str:
+    """Extract role from either dict or ChatCompletionMessage object."""
+    if isinstance(msg, dict):
+        return msg.get("role", "")
+    return getattr(msg, "role", "")
+
+
+def _message_to_dict(msg) -> dict:
+    """Convert message to dict. Handles both dict and ChatCompletionMessage."""
+    if isinstance(msg, dict):
+        return msg
+    # ChatCompletionMessage — convert to dict
+    result = {"role": getattr(msg, "role", "")}
+    content = getattr(msg, "content", None)
+    if content:
+        result["content"] = content
+    tool_calls = getattr(msg, "tool_calls", None)
+    if tool_calls:
+        result["tool_calls"] = [
+            {
+                "id": tc.id,
+                "function": {
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments
+                }
+            }
+            for tc in tool_calls
+        ]
+    tool_call_id = getattr(msg, "tool_call_id", None)
+    if tool_call_id:
+        result["tool_call_id"] = tool_call_id
+    return result
+
+
 def _load_history(user_id: str) -> list[dict]:
     entry = CONVERSATION_HISTORY.get(user_id)
     if not entry:
@@ -197,12 +231,16 @@ def _load_history(user_id: str) -> list[dict]:
         del CONVERSATION_HISTORY[user_id]
         return []
     # Filter out system messages to avoid duplication
-    return [m for m in entry["messages"] if m.get("role") != "system"]
+    return [m for m in entry["messages"] if _get_message_role(m) != "system"]
 
 
-def _save_history(user_id: str, messages: list[dict]):
-    # Filter out system messages before saving to avoid duplication
-    filtered = [m for m in messages if m.get("role") != "system"]
+def _save_history(user_id: str, messages: list):
+    # Convert all messages to dicts and filter out system messages
+    filtered = []
+    for m in messages:
+        role = _get_message_role(m)
+        if role != "system":
+            filtered.append(_message_to_dict(m))
     trimmed = filtered[-MAX_HISTORY_MESSAGES:]
     CONVERSATION_HISTORY[user_id] = {
         "messages": trimmed,
@@ -220,12 +258,11 @@ def _build_conversation_context(messages: list) -> str:
     recent = messages[-6:] if len(messages) > 6 else messages
 
     for msg in recent:
-        # Handle both dict and ChatCompletionMessage objects
+        role = _get_message_role(msg)
+        # Get content from dict or object
         if isinstance(msg, dict):
-            role = msg.get("role", "")
-            content = msg.get("content", "")
+            content = msg.get("content", "") or ""
         else:
-            role = getattr(msg, "role", "")
             content = getattr(msg, "content", "") or ""
 
         if not content:

@@ -68,8 +68,16 @@ async def send_whatsapp_document(phone: str, file_path: str, caption: str = "", 
     async with httpx.AsyncClient(timeout=30.0) as client:
         url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/messages/send-document"
         headers = {"Content-Type": "application/json", "X-API-Key": OPENWA_API_KEY}
-        payload = {"chatId": chat_id or f"{phone}@c.us", "file": file_path, "caption": caption}
+        filename = file_path.split("/")[-1].split("?")[0] or "document.pdf"
+        payload = {
+            "chatId": chat_id or f"{phone}@c.us",
+            "file": file_path,
+            "filename": filename,
+            "caption": caption
+        }
         response = await client.post(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            logger.warning(f"send-document failed: {response.status_code} {response.text[:200]}")
         return response.json()
 
 
@@ -77,8 +85,17 @@ async def send_whatsapp_image(phone: str, file_path: str, caption: str = "", cha
     async with httpx.AsyncClient(timeout=30.0) as client:
         url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/messages/send-image"
         headers = {"Content-Type": "application/json", "X-API-Key": OPENWA_API_KEY}
-        payload = {"chatId": chat_id or f"{phone}@c.us", "file": file_path, "caption": caption}
+        # Extract filename from URL or use default
+        filename = file_path.split("/")[-1].split("?")[0] or "image.jpg"
+        payload = {
+            "chatId": chat_id or f"{phone}@c.us",
+            "file": file_path,
+            "filename": filename,
+            "caption": caption
+        }
         response = await client.post(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            logger.warning(f"send-image failed: {response.status_code} {response.text[:200]}")
         return response.json()
 
 
@@ -86,8 +103,16 @@ async def send_whatsapp_video(phone: str, file_path: str, caption: str = "", cha
     async with httpx.AsyncClient(timeout=30.0) as client:
         url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/messages/send-video"
         headers = {"Content-Type": "application/json", "X-API-Key": OPENWA_API_KEY}
-        payload = {"chatId": chat_id or f"{phone}@c.us", "file": file_path, "caption": caption}
+        filename = file_path.split("/")[-1].split("?")[0] or "video.mp4"
+        payload = {
+            "chatId": chat_id or f"{phone}@c.us",
+            "file": file_path,
+            "filename": filename,
+            "caption": caption
+        }
         response = await client.post(url, json=payload, headers=headers)
+        if response.status_code != 200:
+            logger.warning(f"send-video failed: {response.status_code} {response.text[:200]}")
         return response.json()
 
 

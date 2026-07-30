@@ -98,7 +98,7 @@ async def send_whatsapp_image(phone: str, file_path: str, caption: str = "", cha
             "caption": caption
         }
         response = await client.post(url, json=payload, headers=headers)
-        if response.status_code != 200:
+        if response.status_code not in (200, 201):
             logger.warning(f"send-image failed: {response.status_code} {response.text[:200]}")
         return response.json()
 

@@ -75,10 +75,15 @@ async def send_whatsapp_document(phone: str, file_path: str, caption: str = "", 
             "filename": filename,
             "caption": caption
         }
+        logger.info(f"send-document payload: {json.dumps(payload, indent=2)}")
         response = await client.post(url, json=payload, headers=headers)
         if response.status_code != 200:
             logger.warning(f"send-document failed: {response.status_code} {response.text[:200]}")
-        return response.json()
+        try:
+            return response.json()
+        except Exception:
+            logger.error(f"send-document non-JSON response: {response.status_code} {response.text[:200]}")
+            return {"error": f"Non-JSON response: {response.status_code}"}
 
 
 async def send_whatsapp_image(phone: str, file_path: str, caption: str = "", chat_id: str | None = None):

@@ -1247,17 +1247,55 @@ def get_submissions(enrollment_id: str = None, status: str = None, kind: str = N
 # ============================================================
 
 def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
-    """Get document submissions for a student (read-only)."""
+    """Get document submissions for a student (read-only) with template titles."""
     query = {"studentId": ObjectId(student_id)}
     if enrollment_id:
         query["enrollmentId"] = ObjectId(enrollment_id)
     submissions = list(get_collection("trackonboardingsubmissions").find(query).sort("submittedAt", -1))
+    
+    # Build template lookup
+    template_lookup = {}
+    track_config_ids = list(set(s.get("trackSessionConfigId") for s in submissions if s.get("trackSessionConfigId")))
+    for tc_id in track_config_ids:
+        tc = get_collection("tracksessionconfigs").find_one({"_id": tc_id})
+        if tc:
+            for tmpl in tc.get("documentTemplates", []):
+                template_lookup[str(tmpl.get("_id", ""))] = {
+                    "title": tmpl.get("title", "Unknown Document"),
+                    "code": tmpl.get("code", ""),
+                    "isMandatory": tmpl.get("isMandatory", False),
+                }
+    
+    # Enrich submissions with template info
+    for sub in submissions:
+        template_id = str(sub.get("documentTemplateId", ""))
+        tmpl_info = template_lookup.get(template_id, {})
+        sub["documentTitle"] = tmpl_info.get("title", sub.get("documentTemplateName", "Unknown Document"))
+        sub["documentCode"] = tmpl_info.get("code", "")
+        sub["isMandatory"] = tmpl_info.get("isMandatory", False)
+    
     return _serialize(submissions)
 
 
 def get_student_document_summary(student_id: str, enrollment_id: str = None) -> dict:
-    """Get document submission summary for a student."""
+    """Get document submission summary for a student with template titles."""
     docs = get_student_documents(student_id, enrollment_id)
+    
+    # Build template lookup from track configs
+    template_lookup = {}
+    if docs:
+        # Get unique track config IDs
+        track_config_ids = list(set(d.get("trackSessionConfigId") for d in docs if d.get("trackSessionConfigId")))
+        for tc_id in track_config_ids:
+            tc = get_collection("tracksessionconfigs").find_one({"_id": tc_id})
+            if tc:
+                for tmpl in tc.get("documentTemplates", []):
+                    template_lookup[str(tmpl.get("_id", ""))] = {
+                        "title": tmpl.get("title", "Unknown Document"),
+                        "code": tmpl.get("code", ""),
+                        "isMandatory": tmpl.get("isMandatory", False),
+                    }
+    
     summary = {
         "total": len(docs),
         "approved": sum(1 for d in docs if d.get("status") == "APPROVED"),
@@ -1267,14 +1305,31 @@ def get_student_document_summary(student_id: str, enrollment_id: str = None) -> 
         "documents": []
     }
     for doc in docs:
+        template_id = str(doc.get("documentTemplateId", ""))
+        tmpl_info = template_lookup.get(template_id, {})
+        template_title = tmpl_info.get("title", doc.get("documentTemplateName", "Unknown Document"))
+        template_code = tmpl_info.get("code", "")
+        
+        files_info = []
+        for f in doc.get("files", []):
+            files_info.append({
+                "fileName": f.get("fileName"),
+                "fileSizeBytes": f.get("fileSizeBytes"),
+                "contentType": f.get("contentType")
+            })
+        
         summary["documents"].append({
             "id": str(doc["_id"]),
+            "title": template_title,
+            "code": template_code,
             "kind": doc.get("submissionKind"),
             "status": doc.get("status"),
+            "isMandatory": tmpl_info.get("isMandatory", False),
             "submittedAt": doc.get("submittedAt"),
             "reviewedAt": doc.get("reviewedAt"),
             "reviewComment": doc.get("reviewComment"),
-            "files": doc.get("files", []),
+            "awardedMarks": doc.get("awardedMarks"),
+            "files": files_info,
             "rejectionItems": doc.get("rejectionItems", [])
         })
     return summary

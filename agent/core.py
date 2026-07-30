@@ -5,6 +5,7 @@ from config import OPENCODE_API_KEY, OPENCODE_MODEL, OPENCODE_BASE_URL
 from agent.prompts import build_system_prompt
 from agent.functions import FUNCTIONS, execute_function
 from agent.query_validator import validate_query, TIMEOUT_SECONDS
+from agent.summarizer import summarize_result
 from agent.db import get_collection
 from agent.permissions import get_allowed_collections
 from bson import ObjectId
@@ -135,6 +136,34 @@ def _save_history(user_id: str, messages: list[dict]):
     }
 
 
+def _build_conversation_context(messages: list[dict]) -> str:
+    """
+    Build a short context string from recent messages for the summarizer.
+    Extracts the last 2-3 user/assistant message pairs to understand intent.
+    """
+    context_parts = []
+    # Look at last 6 messages (3 pairs of user/assistant)
+    recent = messages[-6:] if len(messages) > 6 else messages
+
+    for msg in recent:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if not content:
+            continue
+        # Skip system messages and tool messages
+        if role in ("system", "tool"):
+            continue
+        # Truncate long messages
+        if len(content) > 200:
+            content = content[:200] + "..."
+        if role == "user":
+            context_parts.append(f"User: {content}")
+        elif role == "assistant":
+            context_parts.append(f"Assistant: {content}")
+
+    return "\n".join(context_parts[-4:])  # Last 4 lines max
+
+
 def process_message(user_id: str, user_name: str, user_role: str, message: str) -> str:
     allowed = get_allowed_collections(user_role)
     allowed_read = allowed["read"]
@@ -156,8 +185,8 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
     messages.extend(history)
     messages.append({"role": "user", "content": message})
 
-    # Function calling loop (max 5 iterations to prevent infinite loops)
-    for _ in range(5):
+    # Function calling loop (max 10 iterations to prevent infinite loops)
+    for _ in range(10):
         response = client.chat.completions.create(
             model=OPENCODE_MODEL,
             messages=messages,
@@ -208,10 +237,20 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
 
                 result = execute_function(func_name, converted_args, user_role)
 
+            # Summarize large results before injecting into context
+            conv_context = _build_conversation_context(messages)
+            summarized = summarize_result(
+                raw_result=result,
+                function_name=func_name,
+                function_params=func_args,
+                user_message=message,
+                conversation_context=conv_context
+            )
+
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
-                "content": json.dumps(result, default=str)
+                "content": summarized
             })
 
     # If we've exceeded iterations, save what we have and return

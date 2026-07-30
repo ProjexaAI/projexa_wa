@@ -341,6 +341,51 @@ def get_mentor_assignments(mentor_id: str, session_id: str = None) -> list:
     return _serialize(list(get_collection("enrollmentmentorassignments").find(query).sort("assignedAt", -1)))
 
 
+def get_student_mentor(student_id: str = None) -> dict:
+    if not student_id:
+        return {"error": "student_id is required"}
+
+    # Primary: check enrollmentmentorassignments
+    assignment = get_collection("enrollmentmentorassignments").find_one(
+        {"studentId": ObjectId(student_id), "isActive": True},
+        sort=[("assignedAt", -1)]
+    )
+    if assignment:
+        mentor = get_collection("users").find_one({"_id": assignment["mentorId"]})
+        return _serialize({
+            "assigned": True,
+            "source": "enrollmentmentorassignments",
+            "assignment": assignment,
+            "mentor": {
+                "id": str(mentor["_id"]),
+                "name": mentor.get("name"),
+                "email": mentor.get("email"),
+                "mobileNumber": mentor.get("mobileNumber")
+            } if mentor else None
+        })
+
+    # Fallback: check studenttrackenrollments.mentorId field
+    enrollment = get_collection("studenttrackenrollments").find_one(
+        {"studentId": ObjectId(student_id), "mentorId": {"$ne": None}},
+        sort=[("startedAt", -1)]
+    )
+    if enrollment and enrollment.get("mentorId"):
+        mentor = get_collection("users").find_one({"_id": enrollment["mentorId"]})
+        return _serialize({
+            "assigned": True,
+            "source": "studenttrackenrollments",
+            "enrollment": enrollment,
+            "mentor": {
+                "id": str(mentor["_id"]),
+                "name": mentor.get("name"),
+                "email": mentor.get("email"),
+                "mobileNumber": mentor.get("mobileNumber")
+            } if mentor else None
+        })
+
+    return {"assigned": False, "message": "No active mentor assignment found"}
+
+
 def assign_student_to_mentor(enrollment_id: str, mentor_id: str) -> dict:
     enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(enrollment_id)})
     if not enrollment:
@@ -545,10 +590,12 @@ def create_notification(user_id: str, title: str, message: str, notif_type: str,
 # TEAM FUNCTIONS
 # ============================================================
 
-def list_teams(session_id: str = None) -> list:
+def list_teams(session_id: str = None, track_config_id: str = None) -> list:
     query = {}
     if session_id:
         query["sessionId"] = ObjectId(session_id)
+    if track_config_id:
+        query["trackSessionConfigId"] = ObjectId(track_config_id)
     return _serialize(list(get_collection("teams").find(query)))
 
 
@@ -864,6 +911,13 @@ FUNCTIONS = {
         "permission": "read",
         "collection": "enrollmentmentorassignments"
     },
+    "get_student_mentor": {
+        "description": "Get the active mentor for a student. Students use this to check who their mentor is.",
+        "params": {"student_id": "string (optional, defaults to logged-in user)"},
+        "handler": get_student_mentor,
+        "permission": "read",
+        "collection": "enrollmentmentorassignments"
+    },
     "assign_student_to_mentor": {
         "description": "Assign a student to a mentor",
         "params": {"enrollment_id": "string", "mentor_id": "string"},
@@ -970,8 +1024,8 @@ FUNCTIONS = {
         "collection": "notifications"
     },
     "list_teams": {
-        "description": "List teams for a session",
-        "params": {"session_id": "string (optional)"},
+        "description": "List teams for a session, optionally filtered by track config",
+        "params": {"session_id": "string (optional)", "track_config_id": "string (optional)"},
         "handler": list_teams,
         "permission": "read",
         "collection": "teams"

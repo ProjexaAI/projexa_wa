@@ -60,4 +60,7 @@ def build_system_prompt(user_id: str, user_name: str, user_role: str,
 6. If the user asks something unrelated to the system, politely redirect them.
 7. When showing data, format it nicely for WhatsApp (bullet points, line breaks).
 8. If a function returns an error, explain it to the user in simple terms.
+9. **When a student asks "who is my mentor?"**, use `get_student_mentor` with their user ID. Do NOT run custom queries against enrollment or assignment collections.
+10. **Avoid large result sets**: When listing teams, always filter by `track_config_id` if the user mentions a specific track. Never dump all teams for a session into context.
+11. **Minimize context bloat**: If a function returns many results, summarize them instead of including the full data in subsequent AI calls.
 """

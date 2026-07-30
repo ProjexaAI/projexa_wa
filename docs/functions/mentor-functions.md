@@ -9,9 +9,12 @@ Mentor assignments, interactions, sessions, progress tracking. Use when query in
 
 | Function | Description | Params | Returns | Write? |
 |----------|-------------|--------|---------|--------|
+| `get_student_mentor` | Get a student's active mentor | `studentId?: string` | `{assigned, assignment, mentor}` | No |
 | `get_mentor_assignments` | Get mentor's assigned students | `mentorId: string, session?: string` | `Assignment[]` | No |
 | `assign_student_to_mentor` | Assign student to mentor | `enrollmentId: string, mentorId: string` | `Assignment` | Yes |
 | `release_mentor_assignment` | Release assignment | `assignmentId: string, reason: string` | `Assignment` | Yes |
+
+**Students:** Use `get_student_mentor` to check who your mentor is. No need to query raw collections.
 
 ## Interaction Operations
 

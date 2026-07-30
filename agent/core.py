@@ -136,7 +136,7 @@ def _save_history(user_id: str, messages: list[dict]):
     }
 
 
-def _build_conversation_context(messages: list[dict]) -> str:
+def _build_conversation_context(messages: list) -> str:
     """
     Build a short context string from recent messages for the summarizer.
     Extracts the last 2-3 user/assistant message pairs to understand intent.
@@ -146,8 +146,14 @@ def _build_conversation_context(messages: list[dict]) -> str:
     recent = messages[-6:] if len(messages) > 6 else messages
 
     for msg in recent:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
+        # Handle both dict and ChatCompletionMessage objects
+        if isinstance(msg, dict):
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+        else:
+            role = getattr(msg, "role", "")
+            content = getattr(msg, "content", "") or ""
+
         if not content:
             continue
         # Skip system messages and tool messages

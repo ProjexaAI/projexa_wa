@@ -575,17 +575,43 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
 
         total = get_collection("announcements").count_documents(query)
         skip = (page - 1) * page_size
-        items = list(get_collection("announcements").find(query).skip(skip).limit(page_size).sort("createdAt", -1))
+
+        # Use projection to exclude heavy fields and only keep current user's recipientStatuses
+        if user_id:
+            pipeline = [
+                {"$match": query},
+                {"$sort": {"createdAt": -1}},
+                {"$skip": skip},
+                {"$limit": page_size},
+                {"$addFields": {
+                    "recipientStatuses": {
+                        "$filter": {
+                            "input": "$recipientStatuses",
+                            "as": "rs",
+                            "cond": {"$eq": ["$$rs.userId", user_oid]}
+                        }
+                    },
+                    "readBy": {
+                        "$filter": {
+                            "input": "$readBy",
+                            "as": "rb",
+                            "cond": {"$eq": ["$$rb.userId", user_oid]}
+                        }
+                    }
+                }},
+            ]
+            items = list(get_collection("announcements").aggregate(pipeline))
+        else:
+            items = list(get_collection("announcements").find(query, {"readBy": 0}).skip(skip).limit(page_size).sort("createdAt", -1))
 
         # Extract the current user's recipient status from each announcement
         if user_id:
             for item in items:
-                recipient = next(
-                    (r for r in item.get("recipientStatuses", []) if r.get("userId") == user_oid),
-                    None
-                )
+                recipient = item.get("recipientStatuses", [None])[0] if item.get("recipientStatuses") else None
                 item["readAt"] = recipient.get("readAt") if recipient else None
                 item["recipientRole"] = recipient.get("role") if recipient else None
+                read_entry = item.get("readBy", [None])[0] if item.get("readBy") else None
+                item["isRead"] = read_entry is not None
 
         return {"items": _serialize(items), "total": total, "page": page, "pageSize": page_size}
     except Exception as e:

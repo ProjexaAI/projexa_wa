@@ -1247,7 +1247,7 @@ def get_submissions(enrollment_id: str = None, status: str = None, kind: str = N
 # ============================================================
 
 def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
-    """Get latest document submission per template for a student (read-only)."""
+    """Get all document templates with their latest submission status for a student."""
     query = {"studentId": ObjectId(student_id), "submissionKind": "DOCUMENT"}
     if enrollment_id:
         query["enrollmentId"] = ObjectId(enrollment_id)
@@ -1258,24 +1258,73 @@ def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
         ("_id", -1),
     ]))
     
-    # Build template lookup
+    # Get all active templates from track configs (including parent tracks)
     template_lookup = {}
-    track_config_ids = list(set(s.get("trackSessionConfigId") for s in submissions if s.get("trackSessionConfigId")))
+    all_template_ids = []
+    
+    # Collect track config IDs from submissions
+    track_config_ids = set()
+    for s in submissions:
+        tc_id = s.get("trackSessionConfigId")
+        if tc_id:
+            track_config_ids.add(tc_id)
+    
+    # Also get track config from enrollment if provided
+    if enrollment_id:
+        enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(enrollment_id)})
+        if enrollment and enrollment.get("trackSessionConfigId"):
+            track_config_ids.add(enrollment["trackSessionConfigId"])
+    
+    # Process each track config and its parents
+    processed_configs = set()
     for tc_id in track_config_ids:
+        if tc_id in processed_configs:
+            continue
+        processed_configs.add(tc_id)
+        
         tc = get_collection("tracksessionconfigs").find_one({"_id": tc_id})
-        if tc:
-            for tmpl in tc.get("documentTemplates", []):
-                template_lookup[str(tmpl.get("_id", ""))] = {
+        if not tc:
+            continue
+        
+        # Add templates from this config
+        for tmpl in tc.get("documentTemplates", []):
+            if tmpl.get("isActive", True):
+                tid = str(tmpl.get("_id", ""))
+                template_lookup[tid] = {
                     "title": tmpl.get("title", "Unknown Document"),
                     "code": tmpl.get("code", ""),
                     "isMandatory": tmpl.get("isMandatory", False),
                 }
+                all_template_ids.append(tid)
+        
+        # Check for parent track
+        track = get_collection("tracks").find_one({"_id": tc.get("trackId")})
+        if track and track.get("parentTrackId"):
+            parent_tc = get_collection("tracksessionconfigs").find_one({
+                "sessionId": tc.get("sessionId"),
+                "trackId": track["parentTrackId"]
+            })
+            if parent_tc and parent_tc["_id"] not in processed_configs:
+                processed_configs.add(parent_tc["_id"])
+                for tmpl in parent_tc.get("documentTemplates", []):
+                    if tmpl.get("isActive", True):
+                        tid = str(tmpl.get("_id", ""))
+                        if tid not in template_lookup:
+                            template_lookup[tid] = {
+                                "title": tmpl.get("title", "Unknown Document"),
+                                "code": tmpl.get("code", ""),
+                                "isMandatory": tmpl.get("isMandatory", False),
+                            }
+                            all_template_ids.append(tid)
     
     # Keep only the latest submission per documentTemplateId
     seen_templates = set()
     latest_subs = []
     for sub in submissions:
         tid = str(sub.get("documentTemplateId", ""))
+        # Skip submissions with orphaned template IDs (not in current track config)
+        if tid not in template_lookup:
+            continue
         if tid not in seen_templates:
             seen_templates.add(tid)
             # Treat DRAFT as NOT_SUBMITTED (matches web app behavior)
@@ -1292,6 +1341,18 @@ def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
                     if "fileUrl" in f:
                         f["url"] = f.pop("fileUrl")
             latest_subs.append(sub)
+    
+    # Add templates with no submission as NOT_SUBMITTED
+    for tid in all_template_ids:
+        if tid not in seen_templates:
+            tmpl_info = template_lookup[tid]
+            latest_subs.append({
+                "documentTitle": tmpl_info["title"],
+                "documentCode": tmpl_info["code"],
+                "isMandatory": tmpl_info["isMandatory"],
+                "status": "NOT_SUBMITTED",
+                "files": [],
+            })
     
     return _serialize(latest_subs)
 
@@ -1339,7 +1400,7 @@ def get_student_document_summary(student_id: str, enrollment_id: str = None) -> 
             })
         
         summary["documents"].append({
-            "id": str(doc["_id"]),
+            "id": str(doc.get("_id", "")),
             "title": template_title,
             "code": template_code,
             "kind": doc.get("submissionKind"),

@@ -107,7 +107,7 @@ FUNCTION_RULES = {
     },
     "list_announcements": {
         "keep": ["items", "total", "page", "pageSize"],
-        "item_fields": ["title", "message", "audience", "trackScope", "readAt", "recipientRole", "createdAt"],
+        "item_fields": ["title", "message", "audience", "trackScope", "status", "readAt", "recipientRole", "createdAt"],
         "count_label": "announcements"
     },
     "list_tracks": {

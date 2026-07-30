@@ -559,26 +559,19 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
                 role_upper = "MENTORS"
 
             query = {
+                "recipientStatuses.userId": user_oid,
                 "$or": [
-                    # Path 1: user is in the denormalized recipient list
-                    {"recipientStatuses.userId": user_oid},
-                    # Path 2: announcement has no recipients populated (WA agent created)
-                    # AND matches audience + ALL_TRACKS scope
-                    {
-                        "recipientStatuses": {"$exists": True, "$size": 0},
-                        "audience": {"$in": [role_upper, "BOTH"]},
-                        "trackScope": "ALL_TRACKS",
-                    },
-                    # Path 3: recipientStatuses field missing entirely (legacy/edge case)
-                    {
-                        "recipientStatuses": {"$exists": False},
-                        "audience": {"$in": [role_upper, "BOTH"]},
-                        "trackScope": "ALL_TRACKS",
-                    },
-                ]
+                    {"status": "SENT"},
+                    {"status": {"$exists": False}},
+                ],
             }
         else:
-            query = {}
+            query = {
+                "$or": [
+                    {"status": "SENT"},
+                    {"status": {"$exists": False}},
+                ],
+            }
 
         total = get_collection("announcements").count_documents(query)
         skip = (page - 1) * page_size

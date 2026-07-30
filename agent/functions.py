@@ -1273,6 +1273,11 @@ def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
         sub["documentTitle"] = tmpl_info.get("title", sub.get("documentTemplateName", "Unknown Document"))
         sub["documentCode"] = tmpl_info.get("code", "")
         sub["isMandatory"] = tmpl_info.get("isMandatory", False)
+        # Rename fileUrl to url for easier AI consumption
+        if "files" in sub:
+            for f in sub["files"]:
+                if "fileUrl" in f:
+                    f["url"] = f.pop("fileUrl")
     
     return _serialize(submissions)
 
@@ -1313,7 +1318,7 @@ def get_student_document_summary(student_id: str, enrollment_id: str = None) -> 
         files_info = []
         for f in doc.get("files", []):
             files_info.append({
-                "fileUrl": f.get("fileUrl"),
+                "url": f.get("fileUrl"),
                 "fileName": f.get("fileName"),
                 "fileSizeBytes": f.get("fileSizeBytes"),
                 "contentType": f.get("contentType")

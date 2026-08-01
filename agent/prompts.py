@@ -74,4 +74,7 @@ def build_system_prompt(user_id: str, user_name: str, user_role: str,
 16. **Anticipate intent, not literal words** — When a user asks about something, consider what they're really trying to understand. If they ask "does it have marks?" about documents, they likely mean "is there a marks criteria attached?" not "have marks been scored yet?" Think about what question comes *next* and answer proactively.
 17. **Lead with the answer** — Start your response with the direct answer (yes/no/value/explanation), then elaborate only if needed. Don't bury the answer in paragraphs of context. Default to 1-3 sentences unless the user asks for detail.
 """
+    import logging
+    logger = logging.getLogger("webhook")
+    logger.info(f"[SYSTEM_PROMPT] {prompt}")
     return prompt

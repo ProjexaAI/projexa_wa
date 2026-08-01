@@ -156,48 +156,13 @@ def _build_student_context(user_id: str) -> str:
         }))
 
         # Track criteria
-        # Find the RIGHT track config with assessment components
-        # (enrollment's trackSessionConfigId may have 0 components; check via submissions)
+        # Only show components from the enrollment's own track config
         active_components = []
         if track:
             active_components = [c for c in (track.get("assessmentComponents") or []) if c.get("isActive")]
         
-        if not active_components and submissions:
-            # Fallback: find config with components via submission template IDs
-            # (same approach as template fallback — submissions may point to a child config
-            #  that has 0 components, but the parent config has the templates + components)
-            submitted_tpl_ids = set()
-            for sub in submissions:
-                tpl_id = sub.get("documentTemplateId")
-                if tpl_id:
-                    submitted_tpl_ids.add(str(tpl_id))
-            
-            if submitted_tpl_ids:
-                all_tcs = get_collection("tracksessionconfigs").find({
-                    "sessionId": enrollment["sessionId"],
-                })
-                for tc in all_tcs:
-                    # Check if this config owns any of the submitted templates
-                    for tmpl in (tc.get("documentTemplates") or []):
-                        if str(tmpl.get("_id")) in submitted_tpl_ids:
-                            comps = [c for c in (tc.get("assessmentComponents") or []) if c.get("isActive")]
-                            if comps:
-                                active_components = comps
-                                track = tc
-                            break
-                    if active_components:
-                        break
-        
         if active_components:
-            # Build track name: "Parent Track / Child Track" like web app
             track_name = track.get("name") or "Track"
-            # If fallback found a different config (parent), also show enrollment's track name
-            if track.get("_id") != enrollment.get("trackSessionConfigId"):
-                orig_tc = get_collection("tracksessionconfigs").find_one({"_id": enrollment["trackSessionConfigId"]})
-                if orig_tc:
-                    orig_track = get_collection("tracks").find_one({"_id": orig_tc.get("trackId")})
-                    if orig_track and orig_track.get("name"):
-                        track_name = f"{track_name} / {orig_track['name']}"
             lines.append(f"\n## Your Track Criteria ({track_name})")
             ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": enrollment["_id"]}))
             # Only count ledger entries that match active component IDs
@@ -742,33 +707,13 @@ def get_score_ledger(enrollment_id: str) -> list:
     if not enrollment:
         return []
 
-    # Find active component IDs for this enrollment
+    # Only use components from the enrollment's own track config
     active_comp_ids = set()
     track = get_collection("tracksessionconfigs").find_one({"_id": enrollment.get("trackSessionConfigId")})
     if track:
         for c in (track.get("assessmentComponents") or []):
             if c.get("isActive"):
                 active_comp_ids.add(str(c["_id"]))
-
-    # Fallback: find config via submission template IDs
-    if not active_comp_ids:
-        submissions = list(get_collection("trackonboardingsubmissions").find({"enrollmentId": enrollment["_id"]}))
-        submitted_tpl_ids = set()
-        for sub in submissions:
-            tpl_id = sub.get("documentTemplateId")
-            if tpl_id:
-                submitted_tpl_ids.add(str(tpl_id))
-        if submitted_tpl_ids:
-            all_tcs = get_collection("tracksessionconfigs").find({"sessionId": enrollment["sessionId"]})
-            for tc in all_tcs:
-                for tmpl in (tc.get("documentTemplates") or []):
-                    if str(tmpl.get("_id")) in submitted_tpl_ids:
-                        for c in (tc.get("assessmentComponents") or []):
-                            if c.get("isActive"):
-                                active_comp_ids.add(str(c["_id"]))
-                        break
-                if active_comp_ids:
-                    break
 
     query = {"enrollmentId": ObjectId(enrollment_id)}
     if active_comp_ids:
@@ -1586,7 +1531,7 @@ def get_student_score_summary(student_id: str, enrollment_id: str = None) -> dic
         query["enrollmentId"] = ObjectId(enrollment_id)
     ledger = list(get_collection("enrollmentscoreledgers").find(query))
 
-    # Find active component IDs for this student's enrollment(s)
+    # Only use components from the enrollment's own track config
     active_comp_ids = set()
     enrollments = list(get_collection("studenttrackenrollments").find({"studentId": ObjectId(student_id), "status": "ACTIVE"}))
     if enrollment_id:
@@ -1598,26 +1543,6 @@ def get_student_score_summary(student_id: str, enrollment_id: str = None) -> dic
             for c in (track.get("assessmentComponents") or []):
                 if c.get("isActive"):
                     active_comp_ids.add(str(c["_id"]))
-
-        # Fallback: find config via submission template IDs
-        if not active_comp_ids:
-            submissions = list(get_collection("trackonboardingsubmissions").find({"enrollmentId": enrollment["_id"]}))
-            submitted_tpl_ids = set()
-            for sub in submissions:
-                tpl_id = sub.get("documentTemplateId")
-                if tpl_id:
-                    submitted_tpl_ids.add(str(tpl_id))
-            if submitted_tpl_ids:
-                all_tcs = get_collection("tracksessionconfigs").find({"sessionId": enrollment["sessionId"]})
-                for tc in all_tcs:
-                    for tmpl in (tc.get("documentTemplates") or []):
-                        if str(tmpl.get("_id")) in submitted_tpl_ids:
-                            for c in (tc.get("assessmentComponents") or []):
-                                if c.get("isActive"):
-                                    active_comp_ids.add(str(c["_id"]))
-                            break
-                    if active_comp_ids:
-                        break
 
     # Filter ledger to only include entries matching active components
     if active_comp_ids:

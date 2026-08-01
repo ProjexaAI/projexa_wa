@@ -150,29 +150,50 @@ def _build_student_context(user_id: str) -> str:
                 lines.append(f"- Phone: {mentor.get('mobileNumber', 'N/A')}")
         
         # Track criteria
+        # Find the RIGHT track config with assessment components
+        # (enrollment's trackSessionConfigId may have 0 components; check via submissions)
+        active_components = []
         if track:
-            components = track.get("assessmentComponents", [])
-            active_components = [c for c in components if c.get("isActive")]
-            if active_components:
-                lines.append(f"\n## Your Track Criteria ({track.get('name', 'Track')})")
-                ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": enrollment["_id"]}))
-                # Only count ledger entries that match active component IDs
-                active_comp_ids = {str(c["_id"]) for c in active_components}
-                matched_ledger = [l for l in ledger if str(l.get("assessmentComponentId", "")) in active_comp_ids]
-                for comp in active_components:
-                    comp_type = comp.get("type")
-                    comp_title = comp.get("title", comp_type)
-                    max_marks = comp.get("maxMarks", 0)
-                    # Sum marks from ledger for this component
-                    comp_marks = sum(l.get("marksAwarded", 0) for l in matched_ledger if str(l.get("assessmentComponentId", "")) == str(comp["_id"]))
-                    percentage = round(comp_marks / max_marks * 100, 1) if max_marks > 0 else 0
-                    lines.append(f"- {comp_title}: {comp_marks}/{max_marks} ({percentage}%)")
-                
-                # Total
-                total_awarded = sum(l.get("marksAwarded", 0) for l in matched_ledger)
-                total_max = sum(c.get("maxMarks", 0) for c in active_components)
-                total_pct = round(total_awarded / total_max * 100, 1) if total_max > 0 else 0
-                lines.append(f"- **Total: {total_awarded}/{total_max} ({total_pct}%)**")
+            active_components = [c for c in (track.get("assessmentComponents") or []) if c.get("isActive")]
+        
+        if not active_components and submissions:
+            # Fallback: find config with components from submissions' trackSessionConfigId
+            sub_tc_ids = set()
+            for sub in submissions:
+                tc_id = sub.get("trackSessionConfigId")
+                if tc_id:
+                    sub_tc_ids.add(tc_id)
+            
+            for tc_id in sub_tc_ids:
+                tc = get_collection("tracksessionconfigs").find_one({"_id": tc_id})
+                if tc:
+                    comps = [c for c in (tc.get("assessmentComponents") or []) if c.get("isActive")]
+                    if comps:
+                        active_components = comps
+                        track = tc
+                        break
+        
+        if active_components:
+            track_name = track.get("name") or "Track"
+            lines.append(f"\n## Your Track Criteria ({track_name})")
+            ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": enrollment["_id"]}))
+            # Only count ledger entries that match active component IDs
+            active_comp_ids = {str(c["_id"]) for c in active_components}
+            matched_ledger = [l for l in ledger if str(l.get("assessmentComponentId", "")) in active_comp_ids]
+            for comp in active_components:
+                comp_type = comp.get("type")
+                comp_title = comp.get("title", comp_type)
+                max_marks = comp.get("maxMarks", 0)
+                # Sum marks from ledger for this component
+                comp_marks = sum(l.get("marksAwarded", 0) for l in matched_ledger if str(l.get("assessmentComponentId", "")) == str(comp["_id"]))
+                percentage = round(comp_marks / max_marks * 100, 1) if max_marks > 0 else 0
+                lines.append(f"- {comp_title}: {comp_marks}/{max_marks} ({percentage}%)")
+            
+            # Total
+            total_awarded = sum(l.get("marksAwarded", 0) for l in matched_ledger)
+            total_max = sum(c.get("maxMarks", 0) for c in active_components)
+            total_pct = round(total_awarded / total_max * 100, 1) if total_max > 0 else 0
+            lines.append(f"- **Total: {total_awarded}/{total_max} ({total_pct}%)**")
         
         # Documents - show templates and their submission status
         # Get existing submissions for this enrollment

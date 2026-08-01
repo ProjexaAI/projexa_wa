@@ -279,21 +279,26 @@ def _build_student_context(user_id: str) -> str:
             lines.append(f"\n  Summary: {len(submissions)} submitted | {approved} approved | {pending} pending | {rejected} rejected")
         
         # Interactions
-        interactions = list(get_collection("mentorstudentinteractions").find({"studentId": ObjectId(user_id)}))
-        if interactions:
-            lines.append("\n## Your Interactions")
-            completed = sum(1 for i in interactions if i.get("status") == "COMPLETED")
-            pending = sum(1 for i in interactions if i.get("status") in ("PENDING", "SCHEDULED"))
-            lines.append(f"- Total: {len(interactions)} | Completed: {completed} | Pending: {pending}")
+        # Interactions — only if track has interaction templates
+        has_interactions = track and len(track.get("interactionTemplates", [])) > 0
+        if has_interactions:
+            interactions = list(get_collection("mentorstudentinteractions").find({"studentId": ObjectId(user_id)}))
+            if interactions:
+                lines.append("\n## Your Interactions")
+                completed = sum(1 for i in interactions if i.get("status") == "COMPLETED")
+                pending = sum(1 for i in interactions if i.get("status") in ("PENDING", "SCHEDULED"))
+                lines.append(f"- Total: {len(interactions)} | Completed: {completed} | Pending: {pending}")
         
-        # Attendance
-        attendance = list(get_collection("studentattendances").find({"studentId": ObjectId(user_id)}))
-        if attendance:
-            lines.append("\n## Your Attendance")
-            present = sum(1 for a in attendance if a.get("status") == "PRESENT")
-            total = len(attendance)
-            pct = round(present / total * 100, 1) if total > 0 else 0
-            lines.append(f"- Delivered: {total} | Present: {present} | Absent: {total - present} | Percentage: {pct}%")
+        # Attendance — only if track has ATTENDANCE component
+        has_attendance_component = any(c.get("type") == "ATTENDANCE" and c.get("isActive") for c in active_components)
+        if has_attendance_component:
+            attendance = list(get_collection("studentattendances").find({"studentId": ObjectId(user_id)}))
+            if attendance:
+                lines.append("\n## Your Attendance")
+                present = sum(1 for a in attendance if a.get("status") == "PRESENT")
+                total = len(attendance)
+                pct = round(present / total * 100, 1) if total > 0 else 0
+                lines.append(f"- Delivered: {total} | Present: {present} | Absent: {total - present} | Percentage: {pct}%")
     else:
         lines.append("\nNo active enrollment found")
     

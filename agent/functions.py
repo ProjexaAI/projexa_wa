@@ -224,6 +224,10 @@ def _build_student_context(user_id: str) -> str:
                 name = tpl.get("title", "Untitled")
                 is_mandatory = tpl.get("isMandatory", False)
                 marks = tpl.get("maximumMarks")
+                allowed_types = tpl.get("allowedFileTypes") or []
+                max_files = tpl.get("maxFiles", 1)
+                admin_file = tpl.get("fileName")
+                admin_url = tpl.get("fileUrl")
                 
                 sub = submission_map.get(tpl_id)
                 if sub:
@@ -240,6 +244,14 @@ def _build_student_context(user_id: str) -> str:
                 marks_str = f" [{marks} marks]" if marks else ""
                 mandatory_str = " (mandatory)" if is_mandatory else " (optional)"
                 lines.append(f"- {name}: {status_str}{marks_str}{mandatory_str}")
+                if allowed_types:
+                    lines.append(f"  Allowed formats: {', '.join(allowed_types)}")
+                if max_files and max_files > 1:
+                    lines.append(f"  Max files: {max_files}")
+                if admin_file:
+                    lines.append(f"  Admin template: {admin_file}")
+                    if admin_url:
+                        lines.append(f"  Template URL: {admin_url}")
         
         # Documents summary
         if submissions:

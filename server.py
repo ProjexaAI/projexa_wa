@@ -195,6 +195,8 @@ async def handle_webhook(request: Request):
 
     # Handle document uploads directly (bypass AI)
     if msg_type == "document":
+        logger.info(f"Document webhook data keys: {list(msg_data.keys())}")
+        logger.info(f"Document webhook data (truncated): {str(msg_data)[:500]}")
         try:
             upload_result = await handle_document_upload(user, msg_data)
             response_text = upload_result.get("message", "Document processed.")

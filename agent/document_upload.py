@@ -67,55 +67,56 @@ def _guess_content_type(filename: str) -> str:
     return "application/octet-stream"
 
 
-async def download_media_from_openwa(message_id: str) -> tuple[bytes, str, str]:
-    """Download media from OpenWA gateway.
+async def download_media_from_openwa(message_id: str, webhook_data: dict = None) -> tuple[bytes, str, str]:
+    """Extract media from OpenWA webhook payload.
 
-    Returns (file_bytes, filename, content_type).
+    OpenWA returns media inline in the webhook — no download endpoint exists.
+    Looks for base64-encoded data in common fields.
     """
-    url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/media/{message_id}"
-    headers = {"X-API-Key": OPENWA_API_KEY}
+    if not webhook_data:
+        raise ValueError("No webhook data provided — cannot extract media")
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        resp = await client.get(url, headers=headers)
-        resp.raise_for_status()
+    filename = (
+        webhook_data.get("fileName")
+        or webhook_data.get("filename")
+        or webhook_data.get("caption")
+        or "document"
+    )
+    content_type = (
+        webhook_data.get("mimetype")
+        or webhook_data.get("mimeType")
+        or webhook_data.get("contentType")
+        or "application/octet-stream"
+    )
 
-    content_type = resp.headers.get("content-type", "")
-    content_disp = resp.headers.get("content-disposition", "")
+    # Try common fields where OpenWA might put inline media
+    for field in ("data", "buffer", "base64", "mediaData", "media", "body", "content"):
+        raw = webhook_data.get(field)
+        if not raw:
+            continue
+        if isinstance(raw, str) and len(raw) > 100:
+            try:
+                file_bytes = base64.b64decode(raw)
+                if len(file_bytes) > 10:  # Sanity check — not just whitespace
+                    logger.info(f"Got media from field '{field}': {filename} ({len(file_bytes)} bytes, {content_type})")
+                    return file_bytes, filename, content_type
+            except Exception:
+                continue
+        elif isinstance(raw, (bytes, bytearray)):
+            logger.info(f"Got raw bytes from field '{field}': {filename} ({len(raw)} bytes)")
+            return bytes(raw), filename, content_type
 
-    # Extract filename from Content-Disposition if present
-    filename = "document"
-    if "filename=" in content_disp:
-        filename = content_disp.split("filename=")[-1].strip('" ').split(";")[0]
+    # Log all fields to help debug
+    logger.error(f"Could not find inline media. Available fields: {list(webhook_data.keys())}")
+    for k, v in webhook_data.items():
+        val_preview = str(v)[:100] if v else str(v)
+        logger.error(f"  {k}: ({type(v).__name__}) {val_preview}")
 
-    # If JSON response (some OpenWA versions return base64)
-    if "json" in content_type:
-        data = resp.json()
-        if isinstance(data, dict):
-            # Try common fields
-            raw = data.get("data") or data.get("buffer") or data.get("base64") or ""
-            file_bytes = base64.b64decode(raw) if raw else b""
-            filename = data.get("filename") or data.get("fileName") or filename
-            content_type = data.get("mimetype") or data.get("mimeType") or content_type
-        else:
-            file_bytes = resp.content
-    else:
-        file_bytes = resp.content
-
-    if not file_bytes:
-        raise ValueError("Downloaded file is empty")
-
-    if len(file_bytes) > MAX_FILE_SIZE:
-        raise ValueError(f"File too large: {len(file_bytes)} bytes (max {MAX_FILE_SIZE})")
-
-    # Normalize content type
-    ct = content_type.split(";")[0].strip().lower()
-    if ct == "image/jpg":
-        ct = "image/jpeg"
-    if not ct or ct == "application/octet-stream":
-        ct = _guess_content_type(filename)
-
-    logger.info(f"Downloaded from OpenWA: {filename} ({len(file_bytes)} bytes, {ct})")
-    return file_bytes, filename, ct
+    raise ValueError(
+        f"Could not extract media from webhook payload. "
+        f"Available fields: {list(webhook_data.keys())}. "
+        f"OpenWA may need mediaInboundPlugin or inlineMedia enabled."
+    )
 
 
 def generate_user_jwt(user: dict) -> str:
@@ -188,12 +189,15 @@ async def handle_document_upload(user: dict, message_data: dict) -> dict:
     )
     caption = message_data.get("caption", "")
 
+    logger.info(f"Document upload: message_id={message_id}, filename={filename}, caption={caption}")
+    logger.info(f"Webhook data keys: {list(message_data.keys())}")
+
     if not message_id:
         return {"success": False, "message": "Could not identify the message to download.", "file_url": None}
 
     try:
-        # 1. Download from OpenWA
-        file_bytes, actual_filename, content_type = await download_media_from_openwa(message_id)
+        # 1. Download from OpenWA (pass webhook data for inline media)
+        file_bytes, actual_filename, content_type = await download_media_from_openwa(message_id, message_data)
 
         # 2. Validate content type
         if content_type not in ALLOWED_CONTENT_TYPES:

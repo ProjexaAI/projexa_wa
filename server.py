@@ -142,6 +142,10 @@ async def handle_webhook(request: Request):
     message = data.get("body", data)
     raw_from = data.get("from", "") if isinstance(message, str) else message.get("from", data.get("from", ""))
 
+    # Use data dict for metadata lookups (caption, fileName, id, type)
+    # because message may be a string (just the text body)
+    msg_data = message if isinstance(message, dict) else data
+
     if isinstance(message, str):
         text = message
         msg_type = data.get("type", "text")
@@ -160,16 +164,16 @@ async def handle_webhook(request: Request):
 
     # Handle different message types
     if msg_type == "image":
-        caption = message.get("caption", "") or ""
+        caption = msg_data.get("caption", "") or ""
         text = f"[Image] {caption}".strip() or "[Image] Please describe what you need."
     elif msg_type == "document":
-        caption = message.get("caption", "") or ""
-        file_name = message.get("fileName", "") or message.get("filename", "") or ""
+        caption = msg_data.get("caption", "") or ""
+        file_name = msg_data.get("fileName", "") or msg_data.get("filename", "") or ""
         text = f"[Document: {file_name}] {caption}".strip() or f"[Document: {file_name}] Please describe what you need."
     elif msg_type == "audio":
         text = "[Audio] Please type your request."
     elif msg_type == "video":
-        caption = message.get("caption", "") or ""
+        caption = msg_data.get("caption", "") or ""
         text = f"[Video] {caption}".strip() or "[Video] Please describe what you need."
     elif msg_type != "text":
         return {"status": "unsupported_message_type"}
@@ -192,7 +196,7 @@ async def handle_webhook(request: Request):
     # Handle document uploads directly (bypass AI)
     if msg_type == "document":
         try:
-            upload_result = await handle_document_upload(user, message if isinstance(message, dict) else data)
+            upload_result = await handle_document_upload(user, msg_data)
             response_text = upload_result.get("message", "Document processed.")
             await send_whatsapp_message(phone, response_text, chat_id=raw_from)
             return {"status": "document_uploaded"}

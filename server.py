@@ -225,11 +225,7 @@ async def handle_webhook(request: Request):
             return {"status": "upload_error", "detail": str(e)}
 
     try:
-        # Callback to send intermediate updates from the AI
-        async def on_update(message_text: str):
-            await send_whatsapp_message(phone, message_text, chat_id=raw_from)
-
-        result = await _process_async(user_id, user_name, user_role, text, on_update)
+        result = await _process_async(user_id, user_name, user_role, text)
 
         response_text = result.get("text", "") if isinstance(result, dict) else str(result)
         media_items = result.get("media", []) if isinstance(result, dict) else []
@@ -255,15 +251,10 @@ async def handle_webhook(request: Request):
         return {"status": "error", "detail": str(e)}
 
 
-async def _process_async(user_id: str, user_name: str, user_role: str, message: str, on_update=None) -> dict:
+async def _process_async(user_id: str, user_name: str, user_role: str, message: str) -> dict:
     import asyncio
     loop = asyncio.get_event_loop()
-    
-    # Wrap async callback to work with sync process_message
-    def sync_callback(msg):
-        asyncio.run_coroutine_threadsafe(on_update(msg), loop) if on_update else None
-    
-    return await loop.run_in_executor(None, lambda: process_message(user_id, user_name, user_role, message, sync_callback if on_update else None))
+    return await loop.run_in_executor(None, lambda: process_message(user_id, user_name, user_role, message))
 
 
 @app.get("/health")

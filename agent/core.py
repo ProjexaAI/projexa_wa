@@ -371,7 +371,7 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             import logging
             logger = logging.getLogger("webhook")
             result_str = json.dumps(result, default=str)
-            logger.info(f"[FUNC_RESULT] {func_name} | args={func_args} | result={result_str[:500]}")
+            logger.info(f"[FUNC_RESULT] {func_name} | args={func_args} | result={result_str}")
 
             messages.append({
                 "role": "tool",

@@ -163,20 +163,29 @@ def _build_student_context(user_id: str) -> str:
             active_components = [c for c in (track.get("assessmentComponents") or []) if c.get("isActive")]
         
         if not active_components and submissions:
-            # Fallback: find config with components from submissions' trackSessionConfigId
-            sub_tc_ids = set()
+            # Fallback: find config with components via submission template IDs
+            # (same approach as template fallback — submissions may point to a child config
+            #  that has 0 components, but the parent config has the templates + components)
+            submitted_tpl_ids = set()
             for sub in submissions:
-                tc_id = sub.get("trackSessionConfigId")
-                if tc_id:
-                    sub_tc_ids.add(tc_id)
+                tpl_id = sub.get("documentTemplateId")
+                if tpl_id:
+                    submitted_tpl_ids.add(str(tpl_id))
             
-            for tc_id in sub_tc_ids:
-                tc = get_collection("tracksessionconfigs").find_one({"_id": tc_id})
-                if tc:
-                    comps = [c for c in (tc.get("assessmentComponents") or []) if c.get("isActive")]
-                    if comps:
-                        active_components = comps
-                        track = tc
+            if submitted_tpl_ids:
+                all_tcs = get_collection("tracksessionconfigs").find({
+                    "sessionId": enrollment["sessionId"],
+                })
+                for tc in all_tcs:
+                    # Check if this config owns any of the submitted templates
+                    for tmpl in (tc.get("documentTemplates") or []):
+                        if str(tmpl.get("_id")) in submitted_tpl_ids:
+                            comps = [c for c in (tc.get("assessmentComponents") or []) if c.get("isActive")]
+                            if comps:
+                                active_components = comps
+                                track = tc
+                            break
+                    if active_components:
                         break
         
         if active_components:

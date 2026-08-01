@@ -1248,74 +1248,77 @@ def get_submissions(enrollment_id: str = None, status: str = None, kind: str = N
 
 def get_student_documents(student_id: str, enrollment_id: str = None) -> list:
     """Get all document templates with their latest submission status for a student."""
-    query = {"studentId": ObjectId(student_id), "submissionKind": "DOCUMENT"}
+    
+    # Find the active session
+    active_session = get_collection("academicyears").find_one({"isActive": True})
+    if not active_session:
+        return _serialize([])
+    
+    # Find student's enrollment in active session
     if enrollment_id:
-        query["enrollmentId"] = ObjectId(enrollment_id)
-    # Sort by attemptNumber desc, _id desc — latest attempt first per template
+        enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(enrollment_id)})
+    else:
+        enrollment = get_collection("studenttrackenrollments").find_one({
+            "studentId": ObjectId(student_id),
+            "sessionId": active_session["_id"],
+            "status": "ACTIVE"
+        })
+    
+    if not enrollment:
+        return _serialize([])
+    
+    enrollment_oid = enrollment["_id"]
+    
+    # Get submissions for this enrollment only
+    query = {
+        "studentId": ObjectId(student_id),
+        "enrollmentId": enrollment_oid,
+        "submissionKind": "DOCUMENT"
+    }
     submissions = list(get_collection("trackonboardingsubmissions").find(query).sort([
         ("documentTemplateId", 1),
         ("attemptNumber", -1),
         ("_id", -1),
     ]))
     
-    # Get all active templates from track configs (including parent tracks)
+    # Get all active templates from this enrollment's track config and parents
     template_lookup = {}
     all_template_ids = []
-    
-    # Collect track config IDs from submissions
-    track_config_ids = set()
-    for s in submissions:
-        tc_id = s.get("trackSessionConfigId")
-        if tc_id:
-            track_config_ids.add(tc_id)
-    
-    # Also get track config from enrollment if provided
-    if enrollment_id:
-        enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(enrollment_id)})
-        if enrollment and enrollment.get("trackSessionConfigId"):
-            track_config_ids.add(enrollment["trackSessionConfigId"])
-    
-    # Process each track config and its parents
     processed_configs = set()
-    for tc_id in track_config_ids:
-        if tc_id in processed_configs:
-            continue
-        processed_configs.add(tc_id)
-        
+    
+    tc_id = enrollment.get("trackSessionConfigId")
+    if tc_id:
         tc = get_collection("tracksessionconfigs").find_one({"_id": tc_id})
-        if not tc:
-            continue
-        
-        # Add templates from this config
-        for tmpl in tc.get("documentTemplates", []):
-            if tmpl.get("isActive", True):
-                tid = str(tmpl.get("_id", ""))
-                template_lookup[tid] = {
-                    "title": tmpl.get("title", "Unknown Document"),
-                    "code": tmpl.get("code", ""),
-                    "isMandatory": tmpl.get("isMandatory", False),
-                }
-                all_template_ids.append(tid)
-        
-        # Check for parent track
-        track = get_collection("tracks").find_one({"_id": tc.get("trackId")})
-        if track and track.get("parentTrackId"):
-            parent_tc = get_collection("tracksessionconfigs").find_one({
-                "sessionId": tc.get("sessionId"),
-                "trackId": track["parentTrackId"]
-            })
-            if parent_tc and parent_tc["_id"] not in processed_configs:
-                processed_configs.add(parent_tc["_id"])
-                for tmpl in parent_tc.get("documentTemplates", []):
-                    if tmpl.get("isActive", True):
-                        tid = str(tmpl.get("_id", ""))
-                        if tid not in template_lookup:
-                            template_lookup[tid] = {
-                                "title": tmpl.get("title", "Unknown Document"),
-                                "code": tmpl.get("code", ""),
-                                "isMandatory": tmpl.get("isMandatory", False),
-                            }
-                            all_template_ids.append(tid)
+        if tc:
+            # Add templates from this config
+            for tmpl in tc.get("documentTemplates", []):
+                if tmpl.get("isActive", True):
+                    tid = str(tmpl.get("_id", ""))
+                    template_lookup[tid] = {
+                        "title": tmpl.get("title", "Unknown Document"),
+                        "code": tmpl.get("code", ""),
+                        "isMandatory": tmpl.get("isMandatory", False),
+                    }
+                    all_template_ids.append(tid)
+            
+            # Check for parent track
+            track = get_collection("tracks").find_one({"_id": tc.get("trackId")})
+            if track and track.get("parentTrackId"):
+                parent_tc = get_collection("tracksessionconfigs").find_one({
+                    "sessionId": tc.get("sessionId"),
+                    "trackId": track["parentTrackId"]
+                })
+                if parent_tc:
+                    for tmpl in parent_tc.get("documentTemplates", []):
+                        if tmpl.get("isActive", True):
+                            tid = str(tmpl.get("_id", ""))
+                            if tid not in template_lookup:
+                                template_lookup[tid] = {
+                                    "title": tmpl.get("title", "Unknown Document"),
+                                    "code": tmpl.get("code", ""),
+                                    "isMandatory": tmpl.get("isMandatory", False),
+                                }
+                                all_template_ids.append(tid)
     
     # Keep only the latest submission per documentTemplateId
     seen_templates = set()
@@ -1361,35 +1364,15 @@ def get_student_document_summary(student_id: str, enrollment_id: str = None) -> 
     """Get document submission summary for a student with template titles."""
     docs = get_student_documents(student_id, enrollment_id)
     
-    # Build template lookup from track configs
-    template_lookup = {}
-    if docs:
-        # Get unique track config IDs
-        track_config_ids = list(set(d.get("trackSessionConfigId") for d in docs if d.get("trackSessionConfigId")))
-        for tc_id in track_config_ids:
-            tc = get_collection("tracksessionconfigs").find_one({"_id": tc_id})
-            if tc:
-                for tmpl in tc.get("documentTemplates", []):
-                    template_lookup[str(tmpl.get("_id", ""))] = {
-                        "title": tmpl.get("title", "Unknown Document"),
-                        "code": tmpl.get("code", ""),
-                        "isMandatory": tmpl.get("isMandatory", False),
-                    }
-    
     summary = {
         "total": len(docs),
         "approved": sum(1 for d in docs if d.get("status") == "APPROVED"),
         "pending": sum(1 for d in docs if d.get("status") == "SUBMITTED"),
         "rejected": sum(1 for d in docs if d.get("status") == "REJECTED"),
-        "draft": sum(1 for d in docs if d.get("status") == "DRAFT"),
+        "not_submitted": sum(1 for d in docs if d.get("status") == "NOT_SUBMITTED"),
         "documents": []
     }
     for doc in docs:
-        template_id = str(doc.get("documentTemplateId", ""))
-        tmpl_info = template_lookup.get(template_id, {})
-        template_title = tmpl_info.get("title", doc.get("documentTemplateName", "Unknown Document"))
-        template_code = tmpl_info.get("code", "")
-        
         files_info = []
         for f in doc.get("files", []):
             files_info.append({
@@ -1401,11 +1384,10 @@ def get_student_document_summary(student_id: str, enrollment_id: str = None) -> 
         
         summary["documents"].append({
             "id": str(doc.get("_id", "")),
-            "title": template_title,
-            "code": template_code,
-            "kind": doc.get("submissionKind"),
+            "title": doc.get("documentTitle", "Unknown Document"),
+            "code": doc.get("documentCode", ""),
             "status": doc.get("status"),
-            "isMandatory": tmpl_info.get("isMandatory", False),
+            "isMandatory": doc.get("isMandatory", False),
             "submittedAt": doc.get("submittedAt"),
             "reviewedAt": doc.get("reviewedAt"),
             "reviewComment": doc.get("reviewComment"),

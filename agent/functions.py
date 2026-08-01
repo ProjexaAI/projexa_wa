@@ -156,17 +156,20 @@ def _build_student_context(user_id: str) -> str:
             if active_components:
                 lines.append(f"\n## Your Track Criteria ({track.get('name', 'Track')})")
                 ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": enrollment["_id"]}))
+                # Only count ledger entries that match active component IDs
+                active_comp_ids = {str(c["_id"]) for c in active_components}
+                matched_ledger = [l for l in ledger if str(l.get("assessmentComponentId", "")) in active_comp_ids]
                 for comp in active_components:
                     comp_type = comp.get("type")
                     comp_title = comp.get("title", comp_type)
                     max_marks = comp.get("maxMarks", 0)
                     # Sum marks from ledger for this component
-                    comp_marks = sum(l.get("marksAwarded", 0) for l in ledger if l.get("assessmentComponentId") == comp["_id"])
+                    comp_marks = sum(l.get("marksAwarded", 0) for l in matched_ledger if str(l.get("assessmentComponentId", "")) == str(comp["_id"]))
                     percentage = round(comp_marks / max_marks * 100, 1) if max_marks > 0 else 0
                     lines.append(f"- {comp_title}: {comp_marks}/{max_marks} ({percentage}%)")
                 
                 # Total
-                total_awarded = sum(c.get("marksAwarded", 0) for c in ledger)
+                total_awarded = sum(l.get("marksAwarded", 0) for l in matched_ledger)
                 total_max = sum(c.get("maxMarks", 0) for c in active_components)
                 total_pct = round(total_awarded / total_max * 100, 1) if total_max > 0 else 0
                 lines.append(f"- **Total: {total_awarded}/{total_max} ({total_pct}%)**")

@@ -21,7 +21,7 @@ logger = logging.getLogger("wa")
 from config import OPENWA_API_URL, OPENWA_API_KEY, OPENWA_SESSION_ID
 from agent.core import process_message
 from agent.permissions import get_user_by_phone
-from agent.document_upload import handle_document_upload, try_resolve_pending_upload, submit_pending_upload
+from agent.document_upload import download_media_from_openwa, upload_to_r2
 
 app = FastAPI(title="Projexa WhatsApp Agent")
 
@@ -167,9 +167,8 @@ async def handle_webhook(request: Request):
         caption = msg_data.get("caption", "") or ""
         text = f"[Image] {caption}".strip() or "[Image] Please describe what you need."
     elif msg_type == "document":
-        caption = msg_data.get("caption", "") or ""
-        file_name = msg_data.get("fileName", "") or msg_data.get("filename", "") or ""
-        text = f"[Document: {file_name}] {caption}".strip() or f"[Document: {file_name}] Please describe what you need."
+        # Document upload is handled above — this line shouldn't be reached
+        pass
     elif msg_type == "audio":
         text = "[Audio] Please type your request."
     elif msg_type == "video":
@@ -193,31 +192,31 @@ async def handle_webhook(request: Request):
 
     logger.info(f"Incoming: {phone} ({user_role}) | {text[:80]}")
 
-    # Handle document uploads directly (bypass AI)
+    # For documents: upload to R2, then pass file info to AI
     if msg_type == "document":
         try:
-            upload_result = await handle_document_upload(user, msg_data)
-            response_text = upload_result.get("message", "Document processed.")
-            await send_whatsapp_message(phone, response_text, chat_id=raw_from)
-            return {"status": "document_uploaded"}
+            file_bytes, actual_filename, content_type = await download_media_from_openwa(
+                msg_data.get("id") or msg_data.get("messageId") or "", msg_data
+            )
+            upload_result = await upload_to_r2(file_bytes, actual_filename, content_type)
+
+            # Build file info for AI
+            caption = msg_data.get("caption", "") or ""
+            file_info = (
+                f"[User sent a document]\n"
+                f"File: {actual_filename}\n"
+                f"URL: {upload_result['fileUrl']}\n"
+                f"ObjectKey: {upload_result['objectKey']}\n"
+                f"Size: {upload_result['fileSizeBytes']} bytes\n"
+                f"Type: {content_type}\n"
+                f"Caption: {caption}"
+            )
+            text = file_info
+            logger.info(f"Document uploaded to R2: {actual_filename} -> {upload_result['fileUrl']}")
         except Exception as e:
             logger.error(f"Document upload error: {phone} | {e}")
-            await send_whatsapp_message(phone, f"Document upload failed: {str(e)}", chat_id=raw_from)
+            await send_whatsapp_message(phone, f"Failed to process document: {str(e)}", chat_id=raw_from)
             return {"status": "upload_error", "detail": str(e)}
-
-    # Check if this text reply resolves a pending document upload
-    if msg_type == "text":
-        pending = try_resolve_pending_upload(user_id, text)
-        if pending:
-            try:
-                result = await submit_pending_upload(user_id)
-                if result:
-                    await send_whatsapp_message(phone, result["message"], chat_id=raw_from)
-                    return {"status": "pending_upload_submitted"}
-            except Exception as e:
-                logger.error(f"Pending upload submit error: {phone} | {e}")
-                await send_whatsapp_message(phone, f"Submission failed: {str(e)}", chat_id=raw_from)
-                return {"status": "submit_error", "detail": str(e)}
 
     try:
         result = await _process_async(user_id, user_name, user_role, text)

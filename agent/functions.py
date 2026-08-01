@@ -149,6 +149,12 @@ def _build_student_context(user_id: str) -> str:
                 lines.append(f"- Email: {mentor.get('email', 'N/A')}")
                 lines.append(f"- Phone: {mentor.get('mobileNumber', 'N/A')}")
         
+        # Documents - show templates and their submission status
+        # Get existing submissions for this enrollment
+        submissions = list(get_collection("trackonboardingsubmissions").find({
+            "enrollmentId": enrollment["_id"],
+        }))
+
         # Track criteria
         # Find the RIGHT track config with assessment components
         # (enrollment's trackSessionConfigId may have 0 components; check via submissions)
@@ -174,7 +180,15 @@ def _build_student_context(user_id: str) -> str:
                         break
         
         if active_components:
+            # Build track name: "Parent Track / Child Track" like web app
             track_name = track.get("name") or "Track"
+            # If fallback found a different config (parent), also show enrollment's track name
+            if track.get("_id") != enrollment.get("trackSessionConfigId"):
+                orig_tc = get_collection("tracksessionconfigs").find_one({"_id": enrollment["trackSessionConfigId"]})
+                if orig_tc:
+                    orig_track = get_collection("tracks").find_one({"_id": orig_tc.get("trackId")})
+                    if orig_track and orig_track.get("name"):
+                        track_name = f"{track_name} / {orig_track['name']}"
             lines.append(f"\n## Your Track Criteria ({track_name})")
             ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": enrollment["_id"]}))
             # Only count ledger entries that match active component IDs
@@ -194,12 +208,6 @@ def _build_student_context(user_id: str) -> str:
             total_max = sum(c.get("maxMarks", 0) for c in active_components)
             total_pct = round(total_awarded / total_max * 100, 1) if total_max > 0 else 0
             lines.append(f"- **Total: {total_awarded}/{total_max} ({total_pct}%)**")
-        
-        # Documents - show templates and their submission status
-        # Get existing submissions for this enrollment
-        submissions = list(get_collection("trackonboardingsubmissions").find({
-            "enrollmentId": enrollment["_id"],
-        }))
         
         # Find templates from the track config that has them
         # (enrollment's trackSessionConfigId may have 0 templates; check parent tracks too)

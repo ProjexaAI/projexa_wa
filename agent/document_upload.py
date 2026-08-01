@@ -258,6 +258,7 @@ def _extract_template_id(caption: str, user: dict) -> str | None:
     """Try to map caption text to a document template ID.
 
     Looks up active onboarding templates and matches by name/keyword.
+    Templates are embedded in tracksessionconfigs.documentTemplates.
     """
     if not caption:
         return None
@@ -280,23 +281,23 @@ def _extract_template_id(caption: str, user: dict) -> str | None:
     if not enrollment:
         return None
 
-    # Find onboarding templates for this track
-    templates = list(get_collection("trackonboardingtemplates").find({
-        "trackId": enrollment.get("trackId"),
-        "isActive": True,
-    }))
+    # Get track config with embedded templates
+    track_config = get_collection("tracksessionconfigs").find_one({
+        "_id": enrollment.get("trackSessionConfigId"),
+    })
+    if not track_config:
+        return None
 
-    # Match by name keywords
-    for tpl in templates:
-        name = (tpl.get("name", "") or "").lower()
-        keywords = (tpl.get("keywords", []) or [])
-        doc_type = (tpl.get("documentType", "") or "").lower()
+    # Match by name/keywords in embedded templates
+    for tpl in (track_config.get("documentTemplates") or []):
+        if not tpl.get("isActive", True):
+            continue
+        name = (tpl.get("title", "") or "").lower()
+        code = (tpl.get("code", "") or "").lower()
 
-        if any(kw.lower() in caption_lower for kw in keywords):
-            return str(tpl["_id"])
         if name and name in caption_lower:
             return str(tpl["_id"])
-        if doc_type and doc_type in caption_lower:
+        if code and code in caption_lower:
             return str(tpl["_id"])
 
     return None

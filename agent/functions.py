@@ -171,14 +171,55 @@ def _build_student_context(user_id: str) -> str:
                 total_pct = round(total_awarded / total_max * 100, 1) if total_max > 0 else 0
                 lines.append(f"- **Total: {total_awarded}/{total_max} ({total_pct}%)**")
         
-        # Documents
-        docs = list(get_collection("trackonboardingsubmissions").find({"studentId": ObjectId(user_id)}))
+        # Documents - show templates and their submission status
+        if track:
+            # Templates are embedded in tracksessionconfigs.documentTemplates
+            templates = [t for t in (track.get("documentTemplates") or []) if t.get("isActive", True)]
+            if templates:
+                lines.append("\n## Your Required Documents")
+                # Get existing submissions for this enrollment
+                submissions = list(get_collection("trackonboardingsubmissions").find({
+                    "enrollmentId": enrollment["_id"],
+                }))
+                # Map template ID to latest submission status
+                submission_map = {}
+                for sub in submissions:
+                    tpl_id = str(sub.get("documentTemplateId", ""))
+                    if tpl_id:
+                        sub_status = sub.get("status", "UNKNOWN")
+                        # Keep latest submission per template
+                        if tpl_id not in submission_map or sub.get("submittedAt", "") > submission_map[tpl_id].get("submittedAt", ""):
+                            submission_map[tpl_id] = sub
+                
+                for tpl in templates:
+                    tpl_id = str(tpl.get("_id", ""))
+                    name = tpl.get("title", "Untitled")
+                    is_mandatory = tpl.get("isMandatory", False)
+                    marks = tpl.get("maximumMarks")
+                    
+                    sub = submission_map.get(tpl_id)
+                    if sub:
+                        status = sub.get("status", "UNKNOWN")
+                        if status == "APPROVED":
+                            status_str = "APPROVED"
+                        elif status == "REJECTED":
+                            status_str = "REJECTED"
+                        else:
+                            status_str = "SUBMITTED"
+                    else:
+                        status_str = "NOT SUBMITTED"
+                    
+                    marks_str = f" [{marks} marks]" if marks else ""
+                    mandatory_str = " (mandatory)" if is_mandatory else " (optional)"
+                    lines.append(f"- {name}: {status_str}{marks_str}{mandatory_str}")
+        
+        # Documents summary
+        docs = list(get_collection("trackonboardingsubmissions").find({"enrollmentId": enrollment["_id"]}))
         if docs:
-            lines.append("\n## Your Documents")
             approved = sum(1 for d in docs if d.get("status") == "APPROVED")
-            pending = sum(1 for d in docs if d.get("status") == "SUBMITTED")
+            pending = sum(1 for d in docs if d.get("status") in ("SUBMITTED", "PENDING", "RESUBMITTED"))
             rejected = sum(1 for d in docs if d.get("status") == "REJECTED")
-            lines.append(f"- Total: {len(docs)} | Approved: {approved} | Pending: {pending} | Rejected: {rejected}")
+            lines.append(f"\n  Summary: {len(docs)} submitted | {approved} approved | {pending} pending | {rejected} rejected")
         
         # Interactions
         interactions = list(get_collection("mentorstudentinteractions").find({"studentId": ObjectId(user_id)}))
@@ -1530,11 +1571,20 @@ def submit_document_upload(
         return {"error": "No active enrollment found"}
 
     # Verify document template exists and belongs to this track
-    template = get_collection("trackonboardingtemplates").find_one({
-        "_id": ObjectId(document_template_id),
-        "trackId": enrollment.get("trackId"),
-        "isActive": True,
+    # Templates are embedded in tracksessionconfigs.documentTemplates
+    track_config = get_collection("tracksessionconfigs").find_one({
+        "_id": enrollment.get("trackSessionConfigId"),
     })
+    if not track_config:
+        return {"error": "Track configuration not found"}
+    
+    # Find the template in the embedded array
+    template = None
+    for tmpl in (track_config.get("documentTemplates") or []):
+        if str(tmpl.get("_id")) == document_template_id and tmpl.get("isActive", True):
+            template = tmpl
+            break
+    
     if not template:
         return {"error": "Invalid document template for your track"}
 

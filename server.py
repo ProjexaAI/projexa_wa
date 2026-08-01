@@ -166,9 +166,6 @@ async def handle_webhook(request: Request):
     if msg_type == "image":
         caption = msg_data.get("caption", "") or ""
         text = f"[Image] {caption}".strip() or "[Image] Please describe what you need."
-    elif msg_type == "document":
-        # Document upload is handled above — this line shouldn't be reached
-        pass
     elif msg_type == "audio":
         text = "[Audio] Please type your request."
     elif msg_type == "video":
@@ -177,7 +174,7 @@ async def handle_webhook(request: Request):
     elif msg_type != "text":
         return {"status": "unsupported_message_type"}
 
-    if not text.strip():
+    if not text.strip() and msg_type != "document":
         return {"status": "empty_message"}
 
     # Look up user

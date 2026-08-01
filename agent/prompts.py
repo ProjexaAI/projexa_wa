@@ -9,7 +9,7 @@ SCHEMA_COLLECTIONS = {
     "mentor.md": ["enrollmentmentorassignments", "mentorstudentinteractions", "mentorinteractionsessions", "studentprogresses"],
     "onboarding.md": ["trackonboardingsubmissions"],
     "teams.md": ["teams", "teaminvitations"],
-    "notifications.md": ["notifications", "announcements"],
+    "notifications.md": ["announcements"],
     "misc.md": ["placementsettings", "externalmentorverifications", "emailassessmentrequests"],
 }
 
@@ -23,7 +23,6 @@ FUNCTION_DOC_ROLES = {
     "enrollment-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
     "evaluation-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
     "mentor-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
-    "notification-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
     "onboarding-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
     "track-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
     "user-functions.md": ["ADMIN", "MENTOR", "STUDENT"],

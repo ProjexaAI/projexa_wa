@@ -1,35 +1,13 @@
-# Schema: Notifications & Announcements
+# Schema: Announcements
 
 ## Summary
-In-app notifications and announcements. Use this doc when query involves notification, announcement, alert, broadcast.
-
----
-
-## notifications
-
-In-app notifications.
-
-```js
-{
-  _id: ObjectId,
-  userId: ObjectId,
-  type: String,                    // "ANNOUNCEMENT" | "INTERACTION_SCHEDULED" | "INTERACTION_REMINDER" | "INTERACTION_RESCHEDULED" | "INTERACTION_COMPLETED" | "INTERACTION_SCORES_PUBLISHED"
-  title: String,
-  message: String,
-  actionUrl: String,
-  status: String,                  // "PENDING" | "SENT"
-  readAt: Date,
-  scheduledFor: Date
-}
-```
-
-**Key index:** `{ userId: 1, status: 1 }`
+Announcements and notifications. All notifications (broadcasts, interaction events, low attendance alerts) are stored in the single `announcements` collection. Use this doc when query involves notification, announcement, alert, broadcast.
 
 ---
 
 ## announcements
 
-Announcements to students/mentors.
+Announcements to students/mentors. Also used for per-user interaction notifications (with `deliveryChannels: ["IN_APP"]` and single recipient in `recipientStatuses`).
 
 ```js
 {
@@ -41,8 +19,17 @@ Announcements to students/mentors.
   trackScope: String,              // "ALL_TRACKS" | "SELECTED_TRACKS" | "UNASSIGNED_STUDENTS"
   targetTrackNames: [String],
   creatorName: String,
-  recipientCount: Number,
+  creatorRole: String,             // "ADMIN" | "MENTOR"
+  recipientStatuses: [{            // embedded array — per-user tracking
+    userId: ObjectId,
+    status: String,                // "PENDING" | "SENT"
+    sentAt: Date
+  }],
+  readBy: [ObjectId],              // users who have read this announcement
   readCount: Number,
+  recipientCount: Number,
+  status: String,                  // "SENT" | "PENDING"
+  scheduledFor: Date,
   createdAt: Date
 }
 ```

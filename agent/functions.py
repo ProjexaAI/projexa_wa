@@ -1241,49 +1241,24 @@ def create_announcement(title: str, message: str, audience: str, creator_user_id
 
 
 # ============================================================
-# NOTIFICATION FUNCTIONS
+# ANNOUNCEMENT READ TRACKING
 # ============================================================
 
-def list_notifications(user_id: str, status: str = None, page: int = 1, page_size: int = 20) -> dict:
-    query = {"userId": ObjectId(user_id)}
-    if status:
-        query["status"] = status
-    total = get_collection("notifications").count_documents(query)
-    skip = (page - 1) * page_size
-    items = list(get_collection("notifications").find(query).skip(skip).limit(page_size).sort("createdAt", -1))
-    return {"items": _serialize(items), "total": total, "page": page, "pageSize": page_size}
-
-
-def get_unread_count(user_id: str) -> int:
-    return get_collection("notifications").count_documents({
-        "userId": ObjectId(user_id),
-        "readAt": None
-    })
-
-
-def mark_notification_read(notification_id: str) -> dict:
-    get_collection("notifications").update_one(
-        {"_id": ObjectId(notification_id)},
-        {"$set": {"readAt": datetime.utcnow()}}
-    )
-    return _serialize(get_collection("notifications").find_one({"_id": ObjectId(notification_id)}))
-
-
-def create_notification(user_id: str, title: str, message: str, notif_type: str,
-                        action_url: str = None) -> dict:
-    record = {
-        "userId": ObjectId(user_id),
-        "type": notif_type,
-        "title": title,
-        "message": message,
-        "actionUrl": action_url,
-        "eventKey": f"{notif_type}_{datetime.utcnow().timestamp()}",
-        "status": "SENT",
-        "createdAt": datetime.utcnow()
-    }
-    result = get_collection("notifications").insert_one(record)
-    record["_id"] = str(result.inserted_id)
-    return _serialize(record)
+def mark_announcement_read(announcement_id: str, user_id: str) -> dict:
+    """Mark an announcement as read by adding user to readBy array."""
+    ann = get_collection("announcements").find_one({"_id": ObjectId(announcement_id)})
+    if not ann:
+        return {"error": "Announcement not found"}
+    read_by = ann.get("readBy", [])
+    if ObjectId(user_id) not in read_by:
+        get_collection("announcements").update_one(
+            {"_id": ObjectId(announcement_id)},
+            {
+                "$addToSet": {"readBy": ObjectId(user_id)},
+                "$inc": {"readCount": 1}
+            }
+        )
+    return {"status": "marked_as_read"}
 
 
 # ============================================================
@@ -2067,33 +2042,12 @@ FUNCTIONS = {
         "permission": "write",
         "collection": "announcements"
     },
-    "list_notifications": {
-        "description": "List notifications for a user",
-        "params": {"user_id": "string", "status": "string (optional)", "page": "int", "page_size": "int"},
-        "handler": list_notifications,
-        "permission": "read",
-        "collection": "notifications"
-    },
-    "get_unread_count": {
-        "description": "Get count of unread notifications",
-        "params": {"user_id": "string"},
-        "handler": get_unread_count,
-        "permission": "read",
-        "collection": "notifications"
-    },
-    "mark_notification_read": {
-        "description": "Mark a notification as read",
-        "params": {"notification_id": "string"},
-        "handler": mark_notification_read,
+    "mark_announcement_read": {
+        "description": "Mark an announcement as read for a user",
+        "params": {"announcement_id": "string", "user_id": "string"},
+        "handler": mark_announcement_read,
         "permission": "write",
-        "collection": "notifications"
-    },
-    "create_notification": {
-        "description": "Create a notification for a user",
-        "params": {"user_id": "string", "title": "string", "message": "string", "notif_type": "string"},
-        "handler": create_notification,
-        "permission": "write",
-        "collection": "notifications"
+        "collection": ""
     },
     "list_teams": {
         "description": "List teams for a session, optionally filtered by track config or member",

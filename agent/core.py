@@ -101,6 +101,22 @@ TOOL_DEFINITIONS.append({
     }
 })
 
+# Send update tool — allows LLM to send intermediate status updates
+TOOL_DEFINITIONS.append({
+    "type": "function",
+    "function": {
+        "name": "send_update",
+        "description": "Send a brief status update to the user while processing. Use this for complex queries to keep the user informed as you work through steps. Call before or after each major step. Keep messages short and natural.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Brief status update to send to the user"}
+            },
+            "required": ["message"]
+        }
+    }
+})
+
 
 def _serialize(doc):
     """Serialize MongoDB document to JSON-safe dict. Handles ObjectId, datetime, and nested objects."""
@@ -265,9 +281,12 @@ def _save_history(user_id: str, messages: list):
     }
 
 
-def process_message(user_id: str, user_name: str, user_role: str, message: str) -> dict:
+def process_message(user_id: str, user_name: str, user_role: str, message: str, on_update=None) -> dict:
     """
     Process a user message and return a response with optional media.
+
+    Args:
+        on_update: Optional callback function(message: str) to send intermediate updates.
 
     Returns:
         dict with keys:
@@ -336,8 +355,14 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             except json.JSONDecodeError:
                 func_args = {}
 
+            # Handle send_update — call callback and return success
+            if func_name == "send_update":
+                update_msg = func_args.get("message", "")
+                if on_update and update_msg:
+                    on_update(update_msg)
+                result = {"status": "sent"}
             # Handle send_media — capture and return to caller
-            if func_name == "send_media":
+            elif func_name == "send_media":
                 media_item = {
                     "url": func_args.get("url", ""),
                     "type": func_args.get("type", "document"),

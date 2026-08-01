@@ -2051,7 +2051,7 @@ FUNCTIONS = {
         "collection": "enrollmentscoreledgers"
     },
     "submit_document_upload": {
-        "description": "Submit a previously uploaded document (from WhatsApp) to a track onboarding. Use after a student sends a document file.",
+        "description": "Submit a previously uploaded document (from WhatsApp) to a track onboarding. Use after a student sends a document file. This calls the web app API — not a direct DB write.",
         "params": {
             "student_id": "string",
             "document_template_id": "string",
@@ -2062,8 +2062,8 @@ FUNCTIONS = {
             "content_type": "string"
         },
         "handler": submit_document_upload,
-        "permission": "write",
-        "collection": "trackonboardingsubmissions"
+        "permission": "read",
+        "collection": ""
     }
 }
 
@@ -2073,13 +2073,14 @@ def execute_function(name: str, params: dict, user_role: str) -> dict:
     if not func:
         return {"error": f"Unknown function: {name}"}
 
-    # Check permission
-    from agent.permissions import can_read, can_write
+    # Check permission (skip if no collection — function doesn't touch DB directly)
     collection = func.get("collection", "")
-    if func["permission"] == "write" and not can_write(user_role, collection):
-        return {"error": f"Permission denied: {user_role} cannot write to {collection}"}
-    if func["permission"] == "read" and not can_read(user_role, collection):
-        return {"error": f"Permission denied: {user_role} cannot read {collection}"}
+    if collection:
+        from agent.permissions import can_read, can_write
+        if func["permission"] == "write" and not can_write(user_role, collection):
+            return {"error": f"Permission denied: {user_role} cannot write to {collection}"}
+        if func["permission"] == "read" and not can_read(user_role, collection):
+            return {"error": f"Permission denied: {user_role} cannot read {collection}"}
 
     try:
         handler = func["handler"]

@@ -70,12 +70,29 @@ def _guess_content_type(filename: str) -> str:
 async def download_media_from_openwa(message_id: str, webhook_data: dict = None) -> tuple[bytes, str, str]:
     """Extract media from OpenWA webhook payload.
 
-    OpenWA returns media inline in the webhook — no download endpoint exists.
-    Looks for base64-encoded data in common fields.
+    OpenWA returns media inline in webhook under the "media" field:
+    { media: { mimetype, filename, data } }
     """
     if not webhook_data:
         raise ValueError("No webhook data provided — cannot extract media")
 
+    # OpenWA puts media in a nested "media" object
+    media = webhook_data.get("media")
+    if isinstance(media, dict):
+        raw_b64 = media.get("data", "")
+        filename = media.get("filename") or media.get("fileName") or "document"
+        content_type = media.get("mimetype") or media.get("mimeType") or "application/octet-stream"
+
+        if raw_b64 and isinstance(raw_b64, str):
+            try:
+                file_bytes = base64.b64decode(raw_b64)
+                if len(file_bytes) > 10:
+                    logger.info(f"Extracted media: {filename} ({len(file_bytes)} bytes, {content_type})")
+                    return file_bytes, filename, content_type
+            except Exception as e:
+                raise ValueError(f"Failed to decode base64 media: {e}")
+
+    # Fallback: try top-level fields
     filename = (
         webhook_data.get("fileName")
         or webhook_data.get("filename")
@@ -89,34 +106,18 @@ async def download_media_from_openwa(message_id: str, webhook_data: dict = None)
         or "application/octet-stream"
     )
 
-    # Try common fields where OpenWA might put inline media
-    for field in ("data", "buffer", "base64", "mediaData", "media", "body", "content"):
+    for field in ("data", "buffer", "base64", "body", "content"):
         raw = webhook_data.get(field)
-        if not raw:
-            continue
-        if isinstance(raw, str) and len(raw) > 100:
+        if raw and isinstance(raw, str) and len(raw) > 100:
             try:
                 file_bytes = base64.b64decode(raw)
-                if len(file_bytes) > 10:  # Sanity check — not just whitespace
-                    logger.info(f"Got media from field '{field}': {filename} ({len(file_bytes)} bytes, {content_type})")
+                if len(file_bytes) > 10:
+                    logger.info(f"Extracted media from '{field}': {filename} ({len(file_bytes)} bytes)")
                     return file_bytes, filename, content_type
             except Exception:
                 continue
-        elif isinstance(raw, (bytes, bytearray)):
-            logger.info(f"Got raw bytes from field '{field}': {filename} ({len(raw)} bytes)")
-            return bytes(raw), filename, content_type
 
-    # Log all fields to help debug
-    logger.error(f"Could not find inline media. Available fields: {list(webhook_data.keys())}")
-    for k, v in webhook_data.items():
-        val_preview = str(v)[:100] if v else str(v)
-        logger.error(f"  {k}: ({type(v).__name__}) {val_preview}")
-
-    raise ValueError(
-        f"Could not extract media from webhook payload. "
-        f"Available fields: {list(webhook_data.keys())}. "
-        f"OpenWA may need mediaInboundPlugin or inlineMedia enabled."
-    )
+    raise ValueError(f"Could not extract media. media field: {media}")
 
 
 def generate_user_jwt(user: dict) -> str:
@@ -181,16 +182,7 @@ async def handle_document_upload(user: dict, message_data: dict) -> dict:
     Returns {"success": bool, "message": str, "file_url": str|None}
     """
     message_id = message_data.get("id") or message_data.get("messageId") or ""
-    filename = (
-        message_data.get("fileName")
-        or message_data.get("filename")
-        or message_data.get("caption")
-        or "document"
-    )
     caption = message_data.get("caption", "")
-
-    logger.info(f"Document upload: message_id={message_id}, filename={filename}, caption={caption}")
-    logger.info(f"Webhook data keys: {list(message_data.keys())}")
 
     if not message_id:
         return {"success": False, "message": "Could not identify the message to download.", "file_url": None}

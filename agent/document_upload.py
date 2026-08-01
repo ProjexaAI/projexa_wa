@@ -23,6 +23,10 @@ from config import (
 
 logger = logging.getLogger("wa.upload")
 
+# Pending uploads: {user_id: {"file_url", "object_key", "file_name", "file_size_bytes", "content_type", "templates", "timestamp"}}
+PENDING_UPLOADS: dict[str, dict] = {}
+PENDING_UPLOAD_TTL = 300  # 5 minutes
+
 ALLOWED_CONTENT_TYPES = {
     "application/pdf",
     "application/msword",
@@ -158,6 +162,99 @@ async def upload_to_r2(file_bytes: bytes, filename: str, content_type: str) -> d
     }
 
 
+def store_pending_upload(user_id: str, upload_result: dict, templates: list[dict]):
+    """Store a pending upload waiting for template selection."""
+    import time
+    PENDING_UPLOADS[user_id] = {
+        "file_url": upload_result["fileUrl"],
+        "object_key": upload_result["objectKey"],
+        "file_name": upload_result["fileName"],
+        "file_size_bytes": upload_result["fileSizeBytes"],
+        "content_type": upload_result["contentType"],
+        "templates": templates,
+        "timestamp": time.time(),
+    }
+
+
+def get_pending_upload(user_id: str) -> dict | None:
+    """Get pending upload for user if still valid."""
+    import time
+    pending = PENDING_UPLOADS.get(user_id)
+    if not pending:
+        return None
+    if time.time() - pending["timestamp"] > PENDING_UPLOAD_TTL:
+        del PENDING_UPLOADS[user_id]
+        return None
+    return pending
+
+
+def clear_pending_upload(user_id: str):
+    """Clear pending upload after submission."""
+    PENDING_UPLOADS.pop(user_id, None)
+
+
+def try_resolve_pending_upload(user_id: str, text: str) -> dict | None:
+    """Check if text matches a pending upload's template. Returns upload info or None."""
+    pending = get_pending_upload(user_id)
+    if not pending:
+        return None
+
+    text_lower = text.lower().strip()
+
+    # Also accept plain numbers like "1", "2"
+    if text_lower.isdigit():
+        idx = int(text_lower) - 1
+        templates = pending.get("templates", [])
+        if 0 <= idx < len(templates):
+            tpl = templates[idx]
+            pending["selected_template_id"] = tpl["id"]
+            pending["selected_template_title"] = tpl["title"]
+            return pending
+
+    # Match by template name
+    for tpl in pending.get("templates", []):
+        name = tpl.get("title", "").lower()
+        if name and name in text_lower:
+            pending["selected_template_id"] = tpl["id"]
+            pending["selected_template_title"] = tpl["title"]
+            return pending
+
+    return None
+
+
+async def submit_pending_upload(user_id: str) -> dict | None:
+    """Submit a pending upload that has a selected template. Returns result or None."""
+    pending = get_pending_upload(user_id)
+    if not pending or not pending.get("selected_template_id"):
+        return None
+
+    from agent.db import get_collection
+    user = get_collection("users").find_one({"_id": ObjectId(user_id)})
+    if not user:
+        return None
+
+    token = generate_user_jwt(user)
+    files = [{
+        "fileName": pending["file_name"],
+        "fileUrl": pending["file_url"],
+        "objectKey": pending["object_key"],
+        "fileSizeBytes": pending["file_size_bytes"],
+        "contentType": pending["content_type"],
+    }]
+
+    result = await submit_via_webapp(token, pending["selected_template_id"], files)
+    clear_pending_upload(user_id)
+
+    if result.get("status_code") in (200, 201):
+        return {
+            "success": True,
+            "message": f"Document submitted as '{pending['selected_template_title']}' successfully.",
+        }
+    else:
+        msg = result.get("message", "Unknown error")
+        return {"success": False, "message": f"Submission failed: {msg}"}
+
+
 async def submit_via_webapp(jwt_token: str, document_template_id: str, files: list[dict]) -> dict:
     """Submit document to the web app's API."""
     url = f"{WEBAPP_BASE_URL}/api/student/tracks/onboarding/documents"
@@ -256,16 +353,19 @@ async def handle_document_upload(user: dict, message_data: dict) -> dict:
                 "file_url": upload_result["fileUrl"],
             }
 
-        tpl_list = "\n".join(f"- {t.get('title', 'Untitled')}" for t in unsubmitted)
+        # Store as pending upload so user can select template by replying
+        user_id = str(user["_id"])
+        tpl_options = [{"id": str(t["_id"]), "title": t.get("title", "Untitled")} for t in unsubmitted]
+        store_pending_upload(user_id, upload_result, unsubmitted)
+
+        tpl_list = "\n".join(f"{i+1}. {t.get('title', 'Untitled')}" for i, t in enumerate(unsubmitted))
         return {
             "success": True,
             "message": (
-                f"Document '{actual_filename}' uploaded successfully.\n"
-                f"URL: {upload_result['fileUrl']}\n\n"
+                f"Document '{actual_filename}' uploaded successfully.\n\n"
                 f"Which document is this? Reply with the number:\n{tpl_list}"
             ),
             "file_url": upload_result["fileUrl"],
-            "unsubmitted_templates": [{"id": str(t["_id"]), "title": t.get("title")} for t in unsubmitted],
         }
 
     except Exception as e:

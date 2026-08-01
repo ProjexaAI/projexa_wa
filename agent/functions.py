@@ -1587,17 +1587,48 @@ def submit_document_upload(
     file_size_bytes: int,
     content_type: str,
 ) -> dict:
-    """Submit a previously uploaded document via the web app API."""
+    """Submit a previously uploaded document via the web app API.
+
+    document_template_id can be:
+    - A 24-char hex ObjectId (e.g., "6a0ac366c3247e48a174f396")
+    - A template code (e.g., "DOC_MS1LI45R_XJF0UR") — resolved from tracksessionconfigs
+    """
     import asyncio
     import jwt
     from datetime import datetime, timezone, timedelta
     from config import JWT_SECRET, WEBAPP_BASE_URL
     import httpx
+    import re
 
     # Get student info for JWT
     student = get_collection("users").find_one({"_id": ObjectId(student_id)})
     if not student:
         return {"error": "Student not found"}
+
+    # Resolve document_template_id: if not a valid ObjectId, look up by code
+    template_id = document_template_id
+    if not re.match(r"^[0-9a-fA-F]{24}$", document_template_id):
+        # It's a code like "DOC_MS1LI45R_XJF0UR" — search in tracksessionconfigs
+        session = get_collection("academicyears").find_one({"isActive": True})
+        if session:
+            enrollment = get_collection("studenttrackenrollments").find_one({
+                "studentId": student["_id"],
+                "sessionId": session["_id"],
+                "status": "ACTIVE",
+            })
+            if enrollment:
+                # Search all tracksessionconfigs for this template code
+                all_tcs = get_collection("tracksessionconfigs").find({"sessionId": session["_id"]})
+                for tc in all_tcs:
+                    for tmpl in (tc.get("documentTemplates") or []):
+                        if tmpl.get("code", "").upper() == document_template_id.upper():
+                            template_id = str(tmpl["_id"])
+                            break
+                    if template_id != document_template_id:
+                        break
+
+        if template_id == document_template_id:
+            return {"error": f"Could not find template with code '{document_template_id}'. Pass the ObjectId instead."}
 
     # Generate JWT
     now = datetime.now(timezone.utc)
@@ -1620,12 +1651,12 @@ def submit_document_upload(
         "Cookie": f"internship_token={token}",
     }
     payload = {
-        "documentTemplateId": document_template_id,
+        "documentTemplateId": template_id,
         "files": [{
             "fileName": file_name,
             "fileUrl": file_url,
             "objectKey": object_key,
-            "fileSizeBytes": file_size_bytes,
+            "fileSizeBytes": int(file_size_bytes),
             "contentType": content_type,
         }],
     }
@@ -2051,7 +2082,7 @@ FUNCTIONS = {
         "collection": "enrollmentscoreledgers"
     },
     "submit_document_upload": {
-        "description": "Submit a previously uploaded document (from WhatsApp) to a track onboarding. Use after a student sends a document file. This calls the web app API — not a direct DB write.",
+        "description": "Submit a previously uploaded document (from WhatsApp) to a track onboarding. Use after a student sends a document file. document_template_id can be the template code (e.g. DOC_MS1LI45R_XJF0UR) from the context, or the 24-char ObjectId. This calls the web app API — not a direct DB write.",
         "params": {
             "student_id": "string",
             "document_template_id": "string",

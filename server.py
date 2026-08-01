@@ -191,10 +191,17 @@ async def handle_webhook(request: Request):
 
     # For documents: upload to R2, then pass file info to AI
     if msg_type == "document":
+        logger.info(f"Document detected. msg_data keys: {list(msg_data.keys()) if isinstance(msg_data, dict) else 'not dict'}")
+        if isinstance(msg_data, dict):
+            media = msg_data.get("media")
+            logger.info(f"media field: {'present' if media else 'missing'}, type: {type(media).__name__ if media else 'N/A'}")
+            if isinstance(media, dict):
+                logger.info(f"media.keys: {list(media.keys())}, data_len: {len(media.get('data', ''))}")
         try:
             file_bytes, actual_filename, content_type = await download_media_from_openwa(
                 msg_data.get("id") or msg_data.get("messageId") or "", msg_data
             )
+            logger.info(f"Downloaded: {actual_filename} ({len(file_bytes)} bytes, {content_type})")
             upload_result = await upload_to_r2(file_bytes, actual_filename, content_type)
 
             # Build file info for AI
@@ -210,6 +217,7 @@ async def handle_webhook(request: Request):
             )
             text = file_info
             logger.info(f"Document uploaded to R2: {actual_filename} -> {upload_result['fileUrl']}")
+            logger.info(f"Passing to AI: {file_info[:200]}")
         except Exception as e:
             logger.error(f"Document upload error: {phone} | {e}")
             await send_whatsapp_message(phone, f"Failed to process document: {str(e)}", chat_id=raw_from)

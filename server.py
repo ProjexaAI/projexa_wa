@@ -171,7 +171,7 @@ async def handle_webhook(request: Request):
     elif msg_type == "video":
         caption = msg_data.get("caption", "") or ""
         text = f"[Video] {caption}".strip() or "[Video] Please describe what you need."
-    elif msg_type != "text":
+    elif msg_type not in ("text", "document"):
         return {"status": "unsupported_message_type"}
 
     if not text.strip() and msg_type != "document":

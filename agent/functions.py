@@ -210,17 +210,19 @@ def _build_student_context(user_id: str) -> str:
                 # Sum marks from ledger for this component
                 comp_marks = sum(l.get("marksAwarded", 0) for l in matched_ledger if str(l.get("assessmentComponentId", "")) == str(comp["_id"]))
                 percentage = round(comp_marks / max_marks * 100, 1) if max_marks > 0 else 0
-                # Show component type hint so AI knows if it's document-based or session-based
-                type_hint = ""
-                if comp_type == "DOCUMENT":
-                    type_hint = " [document submission]"
-                elif comp_type == "MENTOR_EVALUATION":
-                    type_hint = " [mentor evaluates you]"
-                elif comp_type == "ATTENDANCE":
-                    type_hint = " [attendance tracking]"
-                elif comp_type == "INTERACTION":
-                    type_hint = " [interaction sessions]"
-                lines.append(f"- {comp_title}{type_hint}: {comp_marks}/{max_marks} ({percentage}%)")
+                # Show component type so AI knows exactly what this component is about
+                type_hint = {
+                    "DOCUMENT": "marks awarded when document is submitted & approved",
+                    "MENTOR_EVALUATION": "marks awarded by mentor evaluation",
+                    "ATTENDANCE": "marks awarded via attendance tracking (QR/manual)",
+                    "INTERACTION": "marks awarded from interaction sessions",
+                    "FINAL_EVALUATION": "marks awarded from final evaluation",
+                    "EMAIL": "marks awarded for email verification",
+                    "RUBRIC": "marks awarded via rubric scoring",
+                    "MANUAL": "marks awarded manually",
+                }.get(comp_type, "")
+                hint_str = f" ({type_hint})" if type_hint else ""
+                lines.append(f"- {comp_title}: {comp_marks}/{max_marks}{hint_str}")
             
             # Total
             total_awarded = sum(l.get("marksAwarded", 0) for l in matched_ledger)

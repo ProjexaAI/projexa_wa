@@ -12,6 +12,7 @@ from datetime import datetime, timezone, timedelta
 import boto3
 import httpx
 import jwt
+from bson import ObjectId
 
 from config import (
     JWT_SECRET, WEBAPP_BASE_URL,
@@ -234,15 +235,37 @@ async def handle_document_upload(user: dict, message_data: dict) -> dict:
                 }
 
         # No template ID — file is on R2 but not submitted yet
+        # List unsubmitted templates so user can pick
+        from agent.db import get_collection
+        enrollment_id, templates = _get_track_templates(user)
+        submissions = list(get_collection("trackonboardingsubmissions").find({
+            "enrollmentId": ObjectId(enrollment_id),
+        }))
+        submitted_ids = set()
+        for sub in submissions:
+            tpl_id = sub.get("documentTemplateId")
+            if tpl_id and sub.get("status") in ("APPROVED", "SUBMITTED", "PENDING", "RESUBMITTED"):
+                submitted_ids.add(str(tpl_id))
+
+        unsubmitted = [t for t in templates if str(t.get("_id")) not in submitted_ids]
+
+        if len(unsubmitted) == 0:
+            return {
+                "success": True,
+                "message": f"Document '{actual_filename}' uploaded successfully.\nURL: {upload_result['fileUrl']}\n\nAll required documents are already submitted.",
+                "file_url": upload_result["fileUrl"],
+            }
+
+        tpl_list = "\n".join(f"- {t.get('title', 'Untitled')}" for t in unsubmitted)
         return {
             "success": True,
             "message": (
                 f"Document '{actual_filename}' uploaded successfully.\n"
                 f"URL: {upload_result['fileUrl']}\n\n"
-                f"To complete submission, please tell me which document type this is "
-                f"(e.g., 'submit as passport', 'upload transcript')."
+                f"Which document is this? Reply with the number:\n{tpl_list}"
             ),
             "file_url": upload_result["fileUrl"],
+            "unsubmitted_templates": [{"id": str(t["_id"]), "title": t.get("title")} for t in unsubmitted],
         }
 
     except Exception as e:
@@ -250,51 +273,90 @@ async def handle_document_upload(user: dict, message_data: dict) -> dict:
         return {"success": False, "message": f"Upload failed: {str(e)}", "file_url": None}
 
 
-def _extract_template_id(caption: str, user: dict) -> str | None:
-    """Try to map caption text to a document template ID.
+def _get_track_templates(user: dict) -> tuple[str, list[dict]]:
+    """Get document templates for user's enrollment.
 
-    Looks up active onboarding templates and matches by name/keyword.
-    Templates are embedded in tracksessionconfigs.documentTemplates.
+    Returns (enrollment_id_str, templates_list).
+    Handles the case where enrollment's track config has 0 templates
+    by falling back to the track config that owns the submitted templates.
     """
-    if not caption:
-        return None
-
     from agent.db import get_collection
 
-    caption_lower = caption.lower().strip()
-
-    # Find active session
     session = get_collection("academicyears").find_one({"isActive": True})
     if not session:
-        return None
+        return None, []
 
-    # Find student's active enrollment
     enrollment = get_collection("studenttrackenrollments").find_one({
         "studentId": user["_id"],
         "sessionId": session["_id"],
         "status": "ACTIVE",
     })
     if not enrollment:
+        return None, []
+
+    enrollment_id = str(enrollment["_id"])
+    tc_id = enrollment.get("trackSessionConfigId")
+
+    # Try enrollment's track config first
+    if tc_id:
+        tc = get_collection("tracksessionconfigs").find_one({"_id": tc_id})
+        if tc:
+            templates = [t for t in (tc.get("documentTemplates") or []) if t.get("isActive", True)]
+            if templates:
+                return enrollment_id, templates
+
+    # Fallback: find track config via existing submissions
+    submissions = list(get_collection("trackonboardingsubmissions").find({
+        "enrollmentId": enrollment["_id"],
+    }))
+    submitted_tpl_ids = set()
+    for sub in submissions:
+        tpl_id = sub.get("documentTemplateId")
+        if tpl_id:
+            submitted_tpl_ids.add(str(tpl_id))
+
+    all_tcs = get_collection("tracksessionconfigs").find({"sessionId": session["_id"]})
+    for tc in all_tcs:
+        for tmpl in (tc.get("documentTemplates") or []):
+            if str(tmpl.get("_id")) in submitted_tpl_ids:
+                # Found the right track config — return ALL its templates
+                return enrollment_id, [t for t in (tc.get("documentTemplates") or []) if t.get("isActive", True)]
+
+    return enrollment_id, []
+
+
+def _extract_template_id(caption: str, user: dict) -> str | None:
+    """Try to map caption text to a document template ID.
+
+    1. Match by caption text against template names/codes
+    2. If no caption match and only one unsubmitted template exists, auto-select it
+    """
+    from agent.db import get_collection
+
+    enrollment_id, templates = _get_track_templates(user)
+    if not templates:
         return None
 
-    # Get track config with embedded templates
-    track_config = get_collection("tracksessionconfigs").find_one({
-        "_id": enrollment.get("trackSessionConfigId"),
-    })
-    if not track_config:
-        return None
+    # Get existing submissions
+    submissions = list(get_collection("trackonboardingsubmissions").find({
+        "enrollmentId": ObjectId(enrollment_id),
+    }))
+    submitted_ids = set()
+    for sub in submissions:
+        tpl_id = sub.get("documentTemplateId")
+        if tpl_id and sub.get("status") in ("APPROVED", "SUBMITTED", "PENDING", "RESUBMITTED"):
+            submitted_ids.add(str(tpl_id))
 
-    # Match by name/keywords in embedded templates
-    for tpl in (track_config.get("documentTemplates") or []):
-        if not tpl.get("isActive", True):
-            continue
-        name = (tpl.get("title", "") or "").lower()
-        code = (tpl.get("code", "") or "").lower()
-
-        if name and name in caption_lower:
-            return str(tpl["_id"])
-        if code and code in caption_lower:
-            return str(tpl["_id"])
+    # 1. Try caption match
+    if caption:
+        caption_lower = caption.lower().strip()
+        for tpl in templates:
+            name = (tpl.get("title", "") or "").lower()
+            code = (tpl.get("code", "") or "").lower()
+            if name and name in caption_lower:
+                return str(tpl["_id"])
+            if code and code in caption_lower:
+                return str(tpl["_id"])
 
     return None
 

@@ -1575,113 +1575,63 @@ def submit_document_upload(
     file_size_bytes: int,
     content_type: str,
 ) -> dict:
-    """Submit a previously uploaded document (from WhatsApp) to a track onboarding."""
-    from datetime import datetime, timezone
+    """Submit a previously uploaded document via the web app API."""
+    import asyncio
+    import jwt
+    from datetime import datetime, timezone, timedelta
+    from config import JWT_SECRET, WEBAPP_BASE_URL
+    import httpx
 
-    # Get student info
+    # Get student info for JWT
     student = get_collection("users").find_one({"_id": ObjectId(student_id)})
     if not student:
         return {"error": "Student not found"}
 
-    # Find active session
-    active_session = get_collection("academicyears").find_one({"isActive": True})
-    if not active_session:
-        return {"error": "No active academic session"}
-
-    # Find student's enrollment
-    enrollment = get_collection("studenttrackenrollments").find_one({
-        "studentId": ObjectId(student_id),
-        "sessionId": active_session["_id"],
-        "status": "ACTIVE",
-    })
-    if not enrollment:
-        return {"error": "No active enrollment found"}
-
-    # Verify document template exists and belongs to this track
-    # Templates are embedded in tracksessionconfigs.documentTemplates
-    track_config = get_collection("tracksessionconfigs").find_one({
-        "_id": enrollment.get("trackSessionConfigId"),
-    })
-    if not track_config:
-        return {"error": "Track configuration not found"}
-    
-    # Find the template in the embedded array
-    template = None
-    for tmpl in (track_config.get("documentTemplates") or []):
-        if str(tmpl.get("_id")) == document_template_id and tmpl.get("isActive", True):
-            template = tmpl
-            break
-    
-    if not template:
-        return {"error": "Invalid document template for your track"}
-
-    # Check for existing submission
-    existing = get_collection("trackonboardingsubmissions").find_one({
-        "enrollmentId": enrollment["_id"],
-        "documentTemplateId": ObjectId(document_template_id),
-    })
-
+    # Generate JWT
     now = datetime.now(timezone.utc)
+    token = jwt.encode(
+        {
+            "sub": str(student["_id"]),
+            "email": student.get("email", ""),
+            "roles": student.get("roles", ["STUDENT"]),
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(hours=1)).timestamp()),
+        },
+        JWT_SECRET,
+        algorithm="HS256",
+    )
 
-    files = [{
-        "fileName": file_name,
-        "fileUrl": file_url,
-        "objectKey": object_key,
-        "fileSizeBytes": file_size_bytes,
-        "contentType": content_type,
-    }]
-
-    if existing:
-        # Update existing submission
-        submission_status = "RESUBMITTED"
-        attempts = existing.get("attempts", 0) + 1
-        get_collection("trackonboardingsubmissions").update_one(
-            {"_id": existing["_id"]},
-            {
-                "$set": {
-                    "files": files,
-                    "status": "PENDING",
-                    "submissionStatus": submission_status,
-                    "updatedAt": now,
-                    "submittedAt": now,
-                    "reviewedAt": None,
-                    "reviewedBy": None,
-                    "reviewerComments": None,
-                    "obtainedMarks": None,
-                },
-                "$inc": {"attempts": 1},
-            },
-        )
-        submission_id = str(existing["_id"])
-    else:
-        # Create new submission
-        submission_doc = {
-            "enrollmentId": enrollment["_id"],
-            "documentTemplateId": ObjectId(document_template_id),
-            "submissionKind": "DOCUMENT",
-            "files": files,
-            "status": "PENDING",
-            "submissionStatus": "FIRST_SUBMISSION",
-            "attempts": 1,
-            "submittedAt": now,
-            "createdAt": now,
-            "updatedAt": now,
-            "reviewedAt": None,
-            "reviewedBy": None,
-            "reviewerComments": None,
-            "obtainedMarks": None,
-            "totalMarks": None,
-            "passingMarks": None,
-            "isApproved": None,
-        }
-        result = get_collection("trackonboardingsubmissions").insert_one(submission_doc)
-        submission_id = str(result.inserted_id)
-
-    return {
-        "submission_id": submission_id,
-        "status": "PENDING",
-        "message": f"Document '{file_name}' submitted successfully.",
+    # Call web app API
+    url = f"{WEBAPP_BASE_URL}/api/student/tracks/onboarding/documents"
+    headers = {
+        "Content-Type": "application/json",
+        "Cookie": f"internship_token={token}",
     }
+    payload = {
+        "documentTemplateId": document_template_id,
+        "files": [{
+            "fileName": file_name,
+            "fileUrl": file_url,
+            "objectKey": object_key,
+            "fileSizeBytes": file_size_bytes,
+            "contentType": content_type,
+        }],
+    }
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(url, json=payload, headers=headers)
+            data = resp.json()
+            if resp.status_code in (200, 201):
+                return {
+                    "submission_id": str(data.get("item", {}).get("_id", "")),
+                    "status": "PENDING",
+                    "message": f"Document '{file_name}' submitted successfully.",
+                }
+            else:
+                return {"error": data.get("message", f"Submission failed: {resp.status_code}")}
+    except Exception as e:
+        return {"error": f"Submission failed: {str(e)}"}
 
 
 # ============================================================

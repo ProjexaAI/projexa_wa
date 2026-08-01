@@ -165,13 +165,15 @@ async def upload_to_r2(file_bytes: bytes, filename: str, content_type: str) -> d
 def store_pending_upload(user_id: str, upload_result: dict, templates: list[dict]):
     """Store a pending upload waiting for template selection."""
     import time
+    # Normalize templates to have string "id" and "title"
+    normalized = [{"id": str(t["_id"]), "title": t.get("title", "Untitled")} for t in templates]
     PENDING_UPLOADS[user_id] = {
         "file_url": upload_result["fileUrl"],
         "object_key": upload_result["objectKey"],
         "file_name": upload_result["fileName"],
         "file_size_bytes": upload_result["fileSizeBytes"],
         "content_type": upload_result["contentType"],
-        "templates": templates,
+        "templates": normalized,
         "timestamp": time.time(),
     }
 

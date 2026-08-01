@@ -299,6 +299,21 @@ def _build_student_context(user_id: str) -> str:
                 total = len(attendance)
                 pct = round(present / total * 100, 1) if total > 0 else 0
                 lines.append(f"- Delivered: {total} | Present: {present} | Absent: {total - present} | Percentage: {pct}%")
+        
+        # Build capabilities list based on what's actually in the track
+        is_team_mode = track and track.get("mode") == "TEAM"
+        lines.append("\n## Available Capabilities")
+        lines.append("- View and submit documents")
+        if is_team_mode:
+            lines.append("- View team details and manage team")
+        lines.append("- Check mentor info")
+        lines.append("- View announcements")
+        if active_components:
+            lines.append("- View scores and marks")
+        if has_attendance_component:
+            lines.append("- View attendance statistics")
+        if has_interactions:
+            lines.append("- View mentor interactions and progress")
     else:
         lines.append("\nNo active enrollment found")
     

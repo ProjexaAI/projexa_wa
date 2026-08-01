@@ -21,6 +21,7 @@ logger = logging.getLogger("wa")
 from config import OPENWA_API_URL, OPENWA_API_KEY, OPENWA_SESSION_ID
 from agent.core import process_message
 from agent.permissions import get_user_by_phone
+from agent.document_upload import handle_document_upload
 
 app = FastAPI(title="Projexa WhatsApp Agent")
 
@@ -187,6 +188,18 @@ async def handle_webhook(request: Request):
     user_role = (user.get("roles") or ["STUDENT"])[0]
 
     logger.info(f"Incoming: {phone} ({user_role}) | {text[:80]}")
+
+    # Handle document uploads directly (bypass AI)
+    if msg_type == "document":
+        try:
+            upload_result = await handle_document_upload(user, message if isinstance(message, dict) else data)
+            response_text = upload_result.get("message", "Document processed.")
+            await send_whatsapp_message(phone, response_text, chat_id=raw_from)
+            return {"status": "document_uploaded"}
+        except Exception as e:
+            logger.error(f"Document upload error: {phone} | {e}")
+            await send_whatsapp_message(phone, f"Document upload failed: {str(e)}", chat_id=raw_from)
+            return {"status": "upload_error", "detail": str(e)}
 
     try:
         result = await _process_async(user_id, user_name, user_role, text)

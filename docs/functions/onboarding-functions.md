@@ -17,6 +17,7 @@ Submit documents, intake forms, review submissions. Use when query involves onbo
 | `review_document_submission` | Review document submission (admin) | `adminUserId: string, submissionId: string, decision: "APPROVED"\|"REJECTED", reviewComment?, awardedMarks?, rejectionItems?` | `DocumentSubmission` | Yes |
 | `review_document_as_mentor` | Review document submission (mentor) | `mentorUserId: string, submissionId: string, decision: "APPROVED"\|"REJECTED", reviewComment?, awardedMarks?, rejectionItems?` | `DocumentSubmission` | Yes |
 | `get_submissions` | List submissions | `enrollmentId?: string, filters?: { status?, kind? }` | `Submission[]` | No |
+| `submit_document_upload` | Submit a previously uploaded document (from WhatsApp) to a track onboarding | `studentId: string, documentTemplateId: string, fileUrl: string, objectKey: string, fileName: string, fileSizeBytes: int, contentType: string` | `DocumentSubmission` | Yes |
 
 ---
 

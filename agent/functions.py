@@ -1498,6 +1498,115 @@ def list_academic_years(page: int = 1, page_size: int = 20) -> dict:
     return {"items": _serialize(items), "total": total, "page": page, "pageSize": page_size}
 
 
+def submit_document_upload(
+    student_id: str,
+    document_template_id: str,
+    file_url: str,
+    object_key: str,
+    file_name: str,
+    file_size_bytes: int,
+    content_type: str,
+) -> dict:
+    """Submit a previously uploaded document (from WhatsApp) to a track onboarding."""
+    from datetime import datetime, timezone
+
+    # Get student info
+    student = get_collection("users").find_one({"_id": ObjectId(student_id)})
+    if not student:
+        return {"error": "Student not found"}
+
+    # Find active session
+    active_session = get_collection("academicyears").find_one({"isActive": True})
+    if not active_session:
+        return {"error": "No active academic session"}
+
+    # Find student's enrollment
+    enrollment = get_collection("studenttrackenrollments").find_one({
+        "studentId": ObjectId(student_id),
+        "sessionId": active_session["_id"],
+        "status": "ACTIVE",
+    })
+    if not enrollment:
+        return {"error": "No active enrollment found"}
+
+    # Verify document template exists and belongs to this track
+    template = get_collection("trackonboardingtemplates").find_one({
+        "_id": ObjectId(document_template_id),
+        "trackId": enrollment.get("trackId"),
+        "isActive": True,
+    })
+    if not template:
+        return {"error": "Invalid document template for your track"}
+
+    # Check for existing submission
+    existing = get_collection("trackonboardingsubmissions").find_one({
+        "enrollmentId": enrollment["_id"],
+        "documentTemplateId": ObjectId(document_template_id),
+    })
+
+    now = datetime.now(timezone.utc)
+
+    files = [{
+        "fileName": file_name,
+        "fileUrl": file_url,
+        "objectKey": object_key,
+        "fileSizeBytes": file_size_bytes,
+        "contentType": content_type,
+    }]
+
+    if existing:
+        # Update existing submission
+        submission_status = "RESUBMITTED"
+        attempts = existing.get("attempts", 0) + 1
+        get_collection("trackonboardingsubmissions").update_one(
+            {"_id": existing["_id"]},
+            {
+                "$set": {
+                    "files": files,
+                    "status": "PENDING",
+                    "submissionStatus": submission_status,
+                    "updatedAt": now,
+                    "submittedAt": now,
+                    "reviewedAt": None,
+                    "reviewedBy": None,
+                    "reviewerComments": None,
+                    "obtainedMarks": None,
+                },
+                "$inc": {"attempts": 1},
+            },
+        )
+        submission_id = str(existing["_id"])
+    else:
+        # Create new submission
+        submission_doc = {
+            "enrollmentId": enrollment["_id"],
+            "documentTemplateId": ObjectId(document_template_id),
+            "submissionKind": "DOCUMENT",
+            "files": files,
+            "status": "PENDING",
+            "submissionStatus": "FIRST_SUBMISSION",
+            "attempts": 1,
+            "submittedAt": now,
+            "createdAt": now,
+            "updatedAt": now,
+            "reviewedAt": None,
+            "reviewedBy": None,
+            "reviewerComments": None,
+            "obtainedMarks": None,
+            "totalMarks": None,
+            "passingMarks": None,
+            "isApproved": None,
+        }
+        result = get_collection("trackonboardingsubmissions").insert_one(submission_doc)
+        submission_id = str(result.inserted_id)
+
+    return {
+        "submission_id": submission_id,
+        "status": "PENDING",
+        "message": f"Document '{file_name}' submitted successfully.",
+    }
+
+
 # ============================================================
 # FUNCTION REGISTRY
 # ============================================================
@@ -1901,6 +2010,21 @@ FUNCTIONS = {
         "handler": get_student_score_summary,
         "permission": "read",
         "collection": "enrollmentscoreledgers"
+    },
+    "submit_document_upload": {
+        "description": "Submit a previously uploaded document (from WhatsApp) to a track onboarding. Use after a student sends a document file.",
+        "params": {
+            "student_id": "string",
+            "document_template_id": "string",
+            "file_url": "string",
+            "object_key": "string",
+            "file_name": "string",
+            "file_size_bytes": "int",
+            "content_type": "string"
+        },
+        "handler": submit_document_upload,
+        "permission": "write",
+        "collection": "trackonboardingsubmissions"
     }
 }
 

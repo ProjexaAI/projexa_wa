@@ -5,7 +5,6 @@ from config import OPENCODE_API_KEY, OPENCODE_MODEL, OPENCODE_BASE_URL
 from agent.prompts import build_system_prompt
 from agent.functions import FUNCTIONS, execute_function, get_user_context
 from agent.query_validator import validate_query, TIMEOUT_SECONDS
-from agent.summarizer import summarize_result
 from agent.db import get_collection
 from agent.permissions import get_allowed_collections
 from bson import ObjectId
@@ -266,39 +265,6 @@ def _save_history(user_id: str, messages: list):
     }
 
 
-def _build_conversation_context(messages: list) -> str:
-    """
-    Build a short context string from recent messages for the summarizer.
-    Extracts the last 2-3 user/assistant message pairs to understand intent.
-    """
-    context_parts = []
-    # Look at last 6 messages (3 pairs of user/assistant)
-    recent = messages[-6:] if len(messages) > 6 else messages
-
-    for msg in recent:
-        role = _get_message_role(msg)
-        # Get content from dict or object
-        if isinstance(msg, dict):
-            content = msg.get("content", "") or ""
-        else:
-            content = getattr(msg, "content", "") or ""
-
-        if not content:
-            continue
-        # Skip system messages and tool messages
-        if role in ("system", "tool"):
-            continue
-        # Truncate long messages
-        if len(content) > 200:
-            content = content[:200] + "..."
-        if role == "user":
-            context_parts.append(f"User: {content}")
-        elif role == "assistant":
-            context_parts.append(f"Assistant: {content}")
-
-    return "\n".join(context_parts[-4:])  # Last 4 lines max
-
-
 def process_message(user_id: str, user_name: str, user_role: str, message: str) -> dict:
     """
     Process a user message and return a response with optional media.
@@ -401,20 +367,16 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
 
                 result = execute_function(func_name, converted_args, user_role)
 
-            # Summarize large results before injecting into context
-            conv_context = _build_conversation_context(messages)
-            summarized = summarize_result(
-                raw_result=result,
-                function_name=func_name,
-                function_params=func_args,
-                user_message=message,
-                conversation_context=conv_context
-            )
+            # Log function result for debugging
+            import logging
+            logger = logging.getLogger("webhook")
+            result_str = json.dumps(result, default=str)
+            logger.info(f"[FUNC_RESULT] {func_name} | args={func_args} | result={result_str[:500]}")
 
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
-                "content": summarized
+                "content": result_str
             })
 
     # If we've exceeded iterations, save what we have and return

@@ -13,9 +13,8 @@ agent/
   functions.py               # 40+ predefined DB functions (registry at bottom)
   db.py                      # MongoDB connection (pymongo)
   permissions.py             # Role-based access (ADMIN/MENTOR/STUDENT)
-  prompts.py                 # System prompt builder, loads docs/ into context
+  prompts.py                 # System prompt builder, loads docs/ into context (filtered by role)
   query_validator.py         # Enforces read-only on custom MongoDB queries
-  summarizer.py              # Context size management via summarization
 ```
 
 ## Run
@@ -44,7 +43,7 @@ Copy `.env.example` to `.env`. Required vars:
 
 3. **User lookup by phone** — `permissions.py:get_user_by_phone()` uses multi-strategy matching (exact, digits-only, last-10 regex). WhatsApp sends `@lid` or `@c.us` suffixed phone numbers; both are handled.
 
-4. **Context bloat is a real problem** — `summarizer.py` truncates results >2000 chars. `FUNCTION_RULES` dict controls per-function field extraction. When adding new functions that return large payloads, add summarization rules.
+4. **Context bloat is a real problem** — `prompts.py:load_docs()` filters schema and function docs by role. Function results go directly to the AI without summarization. If functions return large payloads, improve the function to return only needed fields.
 
 5. **Conversation history** — 15-minute TTL, max 20 messages per user, stored in-memory (lost on restart). System messages are stripped from history to avoid duplication.
 
@@ -58,7 +57,7 @@ Copy `.env.example` to `.env`. Required vars:
 
 1. Write handler function in `functions.py`
 2. Add to `FUNCTIONS` dict with `description`, `params`, `handler`, `permission`, `collection`
-3. If large results, add summarization rule to `FUNCTION_RULES` in `summarizer.py`
+3. If large results, improve the function to return only needed fields
 4. If new collection, update `ROLE_PERMISSIONS` in `permissions.py`
 5. If new ObjectId field, add to `ID_FIELDS` in `core.py`
 

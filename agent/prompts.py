@@ -1,31 +1,112 @@
 import os
+import re
+
+# Schema files → collections they document (used to filter by allowed_read)
+SCHEMA_COLLECTIONS = {
+    "attendance.md": ["studentattendances", "attendantscansessions", "attendantscanevents"],
+    "core.md": ["users", "academicyears", "tracks", "tracksessionconfigs", "studenttrackenrollments"],
+    "evaluation.md": ["enrollmentscoreledgers", "mentorevaluationscores", "trackevaluationevents"],
+    "mentor.md": ["enrollmentmentorassignments", "mentorstudentinteractions", "mentorinteractionsessions", "studentprogresses"],
+    "onboarding.md": ["trackonboardingsubmissions"],
+    "teams.md": ["teams", "teaminvitations"],
+    "notifications.md": ["notifications", "announcements"],
+    "misc.md": ["placementsettings", "externalmentorverifications", "emailassessmentrequests"],
+}
+
+# Function doc files → roles they're relevant for
+FUNCTION_DOC_ROLES = {
+    "admin-functions.md": ["ADMIN"],
+    "team-functions.md": ["ADMIN", "STUDENT"],
+    "announcement-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "attendance-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "auth-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "enrollment-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "evaluation-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "mentor-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "notification-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "onboarding-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "track-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+    "user-functions.md": ["ADMIN", "MENTOR", "STUDENT"],
+}
+
+# Enum sections irrelevant to non-admin roles
+ADMIN_ENUM_SECTIONS = [
+    "## Track Switch Request",
+    "## Assessment Rollover Policies",
+    "## Assessment Field Types",
+    "## Intake Field Types",
+    "## Validation Types",
+    "## Support Ticket",
+    "## Admin Audit Entity Types",
+    "## External Mentor Verification",
+    "## Email Assessment Request",
+    "## Placement Settings",
+    "## Personal Email OTP",
+    "## Track Session Config - Document Template",
+    "## Track Session Config - Mentor Evaluation",
+    "## Track Session Config - Team",
+]
 
 
-def load_docs() -> str:
+def _strip_api_routes(content: str) -> str:
+    """Remove API route sections from function docs. These are useless for WhatsApp agent."""
+    # Match from first "## API Routes" to end of string
+    return re.split(r'\n## API Routes', content, maxsplit=1)[0].rstrip()
+
+
+def _strip_enums(content: str, user_role: str) -> str:
+    """Remove enum sections irrelevant to the user's role."""
+    if user_role == "ADMIN":
+        return content
+    for section_header in ADMIN_ENUM_SECTIONS:
+        # Find section and remove it (including content until next ## or end)
+        pattern = re.escape(section_header) + r'.*?(?=\n## |\Z)'
+        content = re.sub(pattern, '', content, flags=re.DOTALL)
+    # Clean up multiple blank lines
+    content = re.sub(r'\n{3,}', '\n\n', content)
+    return content.strip()
+
+
+def load_docs(user_role: str = None, allowed_read: list = None) -> str:
     docs_dir = os.path.join(os.path.dirname(__file__), "..", "docs")
     content = []
 
-    # Load schema docs
+    # Load schema docs — only files covering collections the user can read
     schema_dir = os.path.join(docs_dir, "schema")
     if os.path.exists(schema_dir):
         for f in sorted(os.listdir(schema_dir)):
-            if f.endswith(".md"):
-                with open(os.path.join(schema_dir, f)) as fh:
-                    content.append(fh.read())
+            if not f.endswith(".md"):
+                continue
+            # If no allowed_read filter, include all (admin case)
+            if allowed_read and allowed_read != "*":
+                collections = SCHEMA_COLLECTIONS.get(f, [])
+                if not any(c in allowed_read for c in collections):
+                    continue
+            with open(os.path.join(schema_dir, f)) as fh:
+                content.append(fh.read())
 
-    # Load function docs
+    # Load function docs — only files relevant to the user's role, with API routes stripped
     functions_dir = os.path.join(docs_dir, "functions")
     if os.path.exists(functions_dir):
         for f in sorted(os.listdir(functions_dir)):
-            if f.endswith(".md"):
-                with open(os.path.join(functions_dir, f)) as fh:
-                    content.append(fh.read())
+            if not f.endswith(".md"):
+                continue
+            if user_role:
+                applicable_roles = FUNCTION_DOC_ROLES.get(f, ["ADMIN", "MENTOR", "STUDENT"])
+                if user_role not in applicable_roles:
+                    continue
+            with open(os.path.join(functions_dir, f)) as fh:
+                raw = fh.read()
+                content.append(_strip_api_routes(raw))
 
-    # Load enums
+    # Load enums (with irrelevant sections stripped for non-admins)
     enums_path = os.path.join(docs_dir, "enums.md")
     if os.path.exists(enums_path):
         with open(enums_path) as fh:
-            content.append(fh.read())
+            enums_text = fh.read()
+        if user_role and user_role != "ADMIN":
+            enums_text = _strip_enums(enums_text, user_role)
+        content.append(enums_text)
 
     return "\n\n---\n\n".join(content)
 
@@ -33,7 +114,7 @@ def load_docs() -> str:
 def build_system_prompt(user_id: str, user_name: str, user_role: str,
                         allowed_read: list, allowed_write: list,
                         user_context: str = "") -> str:
-    docs = load_docs()
+    docs = load_docs(user_role=user_role, allowed_read=allowed_read)
 
     read_list = "ALL" if allowed_read == "*" else ", ".join(allowed_read)
     write_list = "ALL" if allowed_write == "*" else ", ".join(allowed_write)

@@ -737,9 +737,44 @@ def get_attendance_stats(enrollment_id: str = None, student_id: str = None) -> d
 # ============================================================
 
 def get_score_ledger(enrollment_id: str) -> list:
-    return _serialize(list(get_collection("enrollmentscoreledgers").find(
-        {"enrollmentId": ObjectId(enrollment_id)}
-    ).sort("recordedAt", -1)))
+    """Get score ledger for enrollment, filtered to only include entries matching active components."""
+    enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(enrollment_id)})
+    if not enrollment:
+        return []
+
+    # Find active component IDs for this enrollment
+    active_comp_ids = set()
+    track = get_collection("tracksessionconfigs").find_one({"_id": enrollment.get("trackSessionConfigId")})
+    if track:
+        for c in (track.get("assessmentComponents") or []):
+            if c.get("isActive"):
+                active_comp_ids.add(str(c["_id"]))
+
+    # Fallback: find config via submission template IDs
+    if not active_comp_ids:
+        submissions = list(get_collection("trackonboardingsubmissions").find({"enrollmentId": enrollment["_id"]}))
+        submitted_tpl_ids = set()
+        for sub in submissions:
+            tpl_id = sub.get("documentTemplateId")
+            if tpl_id:
+                submitted_tpl_ids.add(str(tpl_id))
+        if submitted_tpl_ids:
+            all_tcs = get_collection("tracksessionconfigs").find({"sessionId": enrollment["sessionId"]})
+            for tc in all_tcs:
+                for tmpl in (tc.get("documentTemplates") or []):
+                    if str(tmpl.get("_id")) in submitted_tpl_ids:
+                        for c in (tc.get("assessmentComponents") or []):
+                            if c.get("isActive"):
+                                active_comp_ids.add(str(c["_id"]))
+                        break
+                if active_comp_ids:
+                    break
+
+    query = {"enrollmentId": ObjectId(enrollment_id)}
+    if active_comp_ids:
+        query["assessmentComponentId"] = {"$in": [ObjectId(cid) for cid in active_comp_ids]}
+
+    return _serialize(list(get_collection("enrollmentscoreledgers").find(query).sort("recordedAt", -1)))
 
 
 def record_score(enrollment_id: str, component_type: str, marks: float, max_marks: float,
@@ -1570,24 +1605,62 @@ def get_student_interactions_detail(student_id: str, enrollment_id: str = None) 
 
 
 def get_student_score_summary(student_id: str, enrollment_id: str = None) -> dict:
-    """Get score summary for a student."""
+    """Get score summary for a student, filtered to only include entries matching active components."""
     query = {"studentId": ObjectId(student_id)}
     if enrollment_id:
         query["enrollmentId"] = ObjectId(enrollment_id)
     ledger = list(get_collection("enrollmentscoreledgers").find(query))
-    
+
+    # Find active component IDs for this student's enrollment(s)
+    active_comp_ids = set()
+    enrollments = list(get_collection("studenttrackenrollments").find({"studentId": ObjectId(student_id), "status": "ACTIVE"}))
+    if enrollment_id:
+        enrollments = [e for e in enrollments if str(e["_id"]) == enrollment_id]
+
+    for enrollment in enrollments:
+        track = get_collection("tracksessionconfigs").find_one({"_id": enrollment.get("trackSessionConfigId")})
+        if track:
+            for c in (track.get("assessmentComponents") or []):
+                if c.get("isActive"):
+                    active_comp_ids.add(str(c["_id"]))
+
+        # Fallback: find config via submission template IDs
+        if not active_comp_ids:
+            submissions = list(get_collection("trackonboardingsubmissions").find({"enrollmentId": enrollment["_id"]}))
+            submitted_tpl_ids = set()
+            for sub in submissions:
+                tpl_id = sub.get("documentTemplateId")
+                if tpl_id:
+                    submitted_tpl_ids.add(str(tpl_id))
+            if submitted_tpl_ids:
+                all_tcs = get_collection("tracksessionconfigs").find({"sessionId": enrollment["sessionId"]})
+                for tc in all_tcs:
+                    for tmpl in (tc.get("documentTemplates") or []):
+                        if str(tmpl.get("_id")) in submitted_tpl_ids:
+                            for c in (tc.get("assessmentComponents") or []):
+                                if c.get("isActive"):
+                                    active_comp_ids.add(str(c["_id"]))
+                            break
+                    if active_comp_ids:
+                        break
+
+    # Filter ledger to only include entries matching active components
+    if active_comp_ids:
+        ledger = [l for l in ledger if str(l.get("assessmentComponentId", "")) in active_comp_ids]
+
     by_component = {}
     for entry in ledger:
         comp_type = entry.get("componentType", "UNKNOWN")
+        comp_title = entry.get("assessmentComponentTitle", comp_type)
         if comp_type not in by_component:
-            by_component[comp_type] = {"marksAwarded": 0, "maxMarks": 0}
+            by_component[comp_type] = {"title": comp_title, "marksAwarded": 0, "maxMarks": 0}
         by_component[comp_type]["marksAwarded"] += entry.get("marksAwarded", 0)
         by_component[comp_type]["maxMarks"] += entry.get("maxMarks", 0)
-    
+
     total_awarded = sum(c["marksAwarded"] for c in by_component.values())
     total_max = sum(c["maxMarks"] for c in by_component.values())
     percentage = (total_awarded / total_max * 100) if total_max > 0 else 0
-    
+
     return {
         "total": {"marksAwarded": total_awarded, "maxMarks": total_max, "percentage": round(percentage, 1)},
         "byComponent": by_component

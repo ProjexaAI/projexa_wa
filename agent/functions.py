@@ -172,54 +172,81 @@ def _build_student_context(user_id: str) -> str:
                 lines.append(f"- **Total: {total_awarded}/{total_max} ({total_pct}%)**")
         
         # Documents - show templates and their submission status
+        # Get existing submissions for this enrollment
+        submissions = list(get_collection("trackonboardingsubmissions").find({
+            "enrollmentId": enrollment["_id"],
+        }))
+        
+        # Find templates from the track config that has them
+        # (enrollment's trackSessionConfigId may have 0 templates; check parent tracks too)
+        templates = []
         if track:
-            # Templates are embedded in tracksessionconfigs.documentTemplates
             templates = [t for t in (track.get("documentTemplates") or []) if t.get("isActive", True)]
-            if templates:
-                lines.append("\n## Your Required Documents")
-                # Get existing submissions for this enrollment
-                submissions = list(get_collection("trackonboardingsubmissions").find({
-                    "enrollmentId": enrollment["_id"],
-                }))
-                # Map template ID to latest submission status
-                submission_map = {}
-                for sub in submissions:
-                    tpl_id = str(sub.get("documentTemplateId", ""))
-                    if tpl_id:
-                        sub_status = sub.get("status", "UNKNOWN")
-                        # Keep latest submission per template
-                        if tpl_id not in submission_map or sub.get("submittedAt", "") > submission_map[tpl_id].get("submittedAt", ""):
-                            submission_map[tpl_id] = sub
+        
+        # If no templates in enrollment's track config, look at submission template IDs
+        # and find which track config has those templates
+        if not templates and submissions:
+            # Get unique template IDs from submissions
+            submitted_tpl_ids = set()
+            for sub in submissions:
+                tpl_id = sub.get("documentTemplateId")
+                if tpl_id:
+                    submitted_tpl_ids.add(str(tpl_id))
+            
+            # Search all tracksessionconfigs for matching templates
+            all_tcs = get_collection("tracksessionconfigs").find({
+                "sessionId": enrollment["sessionId"],
+            })
+            for tc in all_tcs:
+                for tmpl in (tc.get("documentTemplates") or []):
+                    if str(tmpl.get("_id")) in submitted_tpl_ids:
+                        templates.append(tmpl)
+                        # Also use this track's templates as the full list
+                if templates:
+                    # Found the right track config — use ALL its templates
+                    templates = [t for t in (tc.get("documentTemplates") or []) if t.get("isActive", True)]
+                    break
+        
+        if templates:
+            lines.append("\n## Your Required Documents")
+            # Map template ID to latest submission status
+            submission_map = {}
+            for sub in submissions:
+                tpl_id = str(sub.get("documentTemplateId", ""))
+                if tpl_id:
+                    sub_status = sub.get("status", "UNKNOWN")
+                    # Keep latest submission per template
+                    if tpl_id not in submission_map or (sub.get("submittedAt") or "") > (submission_map[tpl_id].get("submittedAt") or ""):
+                        submission_map[tpl_id] = sub
+            
+            for tpl in templates:
+                tpl_id = str(tpl.get("_id", ""))
+                name = tpl.get("title", "Untitled")
+                is_mandatory = tpl.get("isMandatory", False)
+                marks = tpl.get("maximumMarks")
                 
-                for tpl in templates:
-                    tpl_id = str(tpl.get("_id", ""))
-                    name = tpl.get("title", "Untitled")
-                    is_mandatory = tpl.get("isMandatory", False)
-                    marks = tpl.get("maximumMarks")
-                    
-                    sub = submission_map.get(tpl_id)
-                    if sub:
-                        status = sub.get("status", "UNKNOWN")
-                        if status == "APPROVED":
-                            status_str = "APPROVED"
-                        elif status == "REJECTED":
-                            status_str = "REJECTED"
-                        else:
-                            status_str = "SUBMITTED"
+                sub = submission_map.get(tpl_id)
+                if sub:
+                    status = sub.get("status", "UNKNOWN")
+                    if status == "APPROVED":
+                        status_str = "✅ Approved"
+                    elif status == "REJECTED":
+                        status_str = "❌ Rejected"
                     else:
-                        status_str = "NOT SUBMITTED"
-                    
-                    marks_str = f" [{marks} marks]" if marks else ""
-                    mandatory_str = " (mandatory)" if is_mandatory else " (optional)"
-                    lines.append(f"- {name}: {status_str}{marks_str}{mandatory_str}")
+                        status_str = "⏳ Submitted"
+                else:
+                    status_str = "⬜ Not submitted"
+                
+                marks_str = f" [{marks} marks]" if marks else ""
+                mandatory_str = " (mandatory)" if is_mandatory else " (optional)"
+                lines.append(f"- {name}: {status_str}{marks_str}{mandatory_str}")
         
         # Documents summary
-        docs = list(get_collection("trackonboardingsubmissions").find({"enrollmentId": enrollment["_id"]}))
-        if docs:
-            approved = sum(1 for d in docs if d.get("status") == "APPROVED")
-            pending = sum(1 for d in docs if d.get("status") in ("SUBMITTED", "PENDING", "RESUBMITTED"))
-            rejected = sum(1 for d in docs if d.get("status") == "REJECTED")
-            lines.append(f"\n  Summary: {len(docs)} submitted | {approved} approved | {pending} pending | {rejected} rejected")
+        if submissions:
+            approved = sum(1 for d in submissions if d.get("status") == "APPROVED")
+            pending = sum(1 for d in submissions if d.get("status") in ("SUBMITTED", "PENDING", "RESUBMITTED"))
+            rejected = sum(1 for d in submissions if d.get("status") == "REJECTED")
+            lines.append(f"\n  Summary: {len(submissions)} submitted | {approved} approved | {pending} pending | {rejected} rejected")
         
         # Interactions
         interactions = list(get_collection("mentorstudentinteractions").find({"studentId": ObjectId(user_id)}))

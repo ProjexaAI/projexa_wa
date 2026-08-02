@@ -306,11 +306,17 @@ async def handle_webhook(request: Request):
     event = body.get("event")
     data = body.get("data", {})
 
+    # Debug: log all incoming webhooks
+    logger.info(f"[WEBHOOK-IN] event={event} | data_keys={list(data.keys()) if isinstance(data, dict) else type(data).__name__}")
+    if isinstance(data, dict):
+        logger.info(f"[WEBHOOK-IN] from={data.get('from', 'N/A')} | type={data.get('type', 'N/A')} | body_preview={str(data.get('body', ''))[:200]}")
+
     if event != "message.received":
         return {"status": "ignored"}
 
     idempotency_key = body.get("idempotencyKey")
     if idempotency_key and _is_duplicate_webhook(idempotency_key):
+        logger.info(f"[WEBHOOK-IN] Duplicate webhook, skipping: {idempotency_key}")
         return {"status": "duplicate"}
 
     message = data.get("body", data)
@@ -342,6 +348,8 @@ async def handle_webhook(request: Request):
         if sender_phone:
             phone = sender_phone.replace("@c.us", "").replace("@lid", "")
         else:
+            logger.warning(f"[GROUP-DEBUG] No sender identified! data keys={list(data.keys())}")
+            logger.warning(f"[GROUP-DEBUG] author={data.get('author')}, sender={data.get('sender')}, participant={data.get('participant')}")
             await send_whatsapp_message(phone, "I couldn't identify who sent this message.", chat_id=raw_from)
             return {"status": "group_sender_unknown"}
         chat_id = raw_from

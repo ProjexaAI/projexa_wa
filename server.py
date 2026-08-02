@@ -157,6 +157,45 @@ def _lookup_user_by_identifier(identifier: str) -> dict | None:
     return None
 
 
+def _search_users(identifier: str) -> list[dict]:
+    """Search users by name, email, roll number, or phone. Returns list of matching users."""
+    identifier = identifier.strip()
+    query = {
+        "isActive": True,
+        "$or": [
+            {"isDeleted": False},
+            {"isDeleted": {"$exists": False}},
+            {"isDeleted": None}
+        ]
+    }
+    search_regex = {"$regex": identifier, "$options": "i"}
+    query["$or"] = [
+        {"name": search_regex},
+        {"email": search_regex},
+        {"rollNumber": search_regex},
+        {"mobileNumber": search_regex}
+    ]
+    results = list(get_collection("users").find(query).limit(10))
+    return results
+
+
+def _format_user_list(users: list[dict]) -> str:
+    """Format a list of users for WhatsApp display."""
+    lines = [f"Found {len(users)} user(s):\n"]
+    for i, user in enumerate(users, 1):
+        name = user.get("name", "Unknown")
+        role = (user.get("roles") or ["STUDENT"])[0]
+        email = user.get("email", "N/A")
+        roll = user.get("rollNumber", "N/A")
+        phone = user.get("mobileNumber", "N/A")
+        lines.append(f"*{i}. {name}* ({role})")
+        lines.append(f"   Email: {email}")
+        lines.append(f"   Roll: {roll}")
+        lines.append(f"   Phone: {phone}\n")
+    lines.append("Reply with the number (1, 2, etc.) to select.")
+    return "\n".join(lines)
+
+
 def _contains_master_password(text: str) -> bool:
     """Check if message contains the master admin password."""
     if not MASTER_ADMIN_PASSWORD:
@@ -183,23 +222,57 @@ async def _handle_master_admin(phone: str, text: str, chat_id: str) -> tuple[boo
             logger.info(f"[MASTER_ADMIN] {phone} exited impersonation of {target_name}")
             return True, f"Exited master admin mode. No longer acting as {target_name}."
         else:
-            # Enter master admin mode
+            # Enter master admin mode (clear any existing state)
             MASTER_ADMIN_STATES[phone] = {"state": "AWAITING_TARGET"}
             logger.info(f"[MASTER_ADMIN] {phone} entered master admin mode")
             return True, (
                 "Master admin mode activated.\n\n"
-                "Send the user's email, roll number, or mobile number to access their account."
+                "Send a name, email, roll number, or phone number to search for a user."
             )
 
-    # If in AWAITING_TARGET state, look up the target user
+    # If in AWAITING_TARGET state, search for users
     if state and state.get("state") == "AWAITING_TARGET":
-        target_user = _lookup_user_by_identifier(text)
-        if not target_user:
+        results = _search_users(text)
+        if not results:
             return True, (
-                "No user found matching that identifier.\n\n"
-                "Try again with an email, roll number, or mobile number."
+                "No users found matching that query.\n\n"
+                "Try a different name, email, roll number, or phone number."
             )
-        # Set impersonation
+        if len(results) == 1:
+            # Single match — auto-select
+            target_user = results[0]
+            MASTER_ADMIN_STATES[phone] = {
+                "state": "IMPERSONATING",
+                "target": target_user
+            }
+            target_name = target_user.get("name", "Unknown")
+            target_role = (target_user.get("roles") or ["STUDENT"])[0]
+            target_id = str(target_user["_id"])
+            logger.info(f"[MASTER_ADMIN] {phone} now impersonating {target_name} ({target_role}, {target_id})")
+            return True, (
+                f"Now acting as *{target_name}* ({target_role}).\n"
+                f"User ID: {target_id}\n\n"
+                f"Send any message to interact as this user.\n"
+                f"Send the master password again to exit."
+            )
+        else:
+            # Multiple matches — show list
+            MASTER_ADMIN_STATES[phone] = {
+                "state": "AWAITING_SELECTION",
+                "results": results
+            }
+            return True, _format_user_list(results)
+
+    # If in AWAITING_SELECTION state, pick from results
+    if state and state.get("state") == "AWAITING_SELECTION":
+        try:
+            choice = int(text.strip())
+        except ValueError:
+            return True, "Please reply with a number (e.g., 1, 2, 3)."
+        results = state.get("results", [])
+        if choice < 1 or choice > len(results):
+            return True, f"Please pick a number between 1 and {len(results)}."
+        target_user = results[choice - 1]
         MASTER_ADMIN_STATES[phone] = {
             "state": "IMPERSONATING",
             "target": target_user
@@ -209,7 +282,7 @@ async def _handle_master_admin(phone: str, text: str, chat_id: str) -> tuple[boo
         target_id = str(target_user["_id"])
         logger.info(f"[MASTER_ADMIN] {phone} now impersonating {target_name} ({target_role}, {target_id})")
         return True, (
-            f"Now acting as {target_name} ({target_role}).\n"
+            f"Now acting as *{target_name}* ({target_role}).\n"
             f"User ID: {target_id}\n\n"
             f"Send any message to interact as this user.\n"
             f"Send the master password again to exit."

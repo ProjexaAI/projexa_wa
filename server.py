@@ -333,6 +333,10 @@ async def handle_webhook(request: Request):
     # Handle group messages (@g.us) — all group messages treated as master admin
     is_group = raw_from.endswith("@g.us")
     if is_group:
+        # Debug: log full data dict to see available fields
+        logger.info(f"[GROUP-DEBUG] raw_from={raw_from}")
+        logger.info(f"[GROUP-DEBUG] data keys={list(data.keys())}")
+        logger.info(f"[GROUP-DEBUG] data={json.dumps(data, default=str, indent=2)[:2000]}")
         # Extract sender's phone from author/sender field
         sender_phone = data.get("author", "") or data.get("sender", "") or data.get("participant", "")
         if sender_phone:

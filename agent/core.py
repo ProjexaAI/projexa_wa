@@ -2,7 +2,7 @@ import json
 import time
 from openai import OpenAI
 from config import OPENCODE_API_KEY, OPENCODE_MODEL, OPENCODE_BASE_URL
-from agent.prompts import build_system_prompt
+from agent.prompts import build_system_prompt, HUMANIZER_SYSTEM_PROMPT
 from agent.functions import FUNCTIONS, execute_function, get_user_context
 from agent.query_validator import validate_query, TIMEOUT_SECONDS
 from agent.db import get_collection
@@ -10,6 +10,33 @@ from agent.permissions import get_allowed_collections
 from bson import ObjectId
 
 client = OpenAI(api_key=OPENCODE_API_KEY, base_url=OPENCODE_BASE_URL)
+
+import logging
+logger = logging.getLogger("webhook")
+
+
+def humanize_response(raw_text: str, user_name: str) -> str:
+    """Pass raw AI response through a second LLM to make it sound natural on WhatsApp."""
+    if not raw_text or not raw_text.strip():
+        return raw_text
+    try:
+        response = client.chat.completions.create(
+            model=OPENCODE_MODEL,
+            messages=[
+                {"role": "system", "content": HUMANIZER_SYSTEM_PROMPT},
+                {"role": "user", "content": f"USER: {user_name}\n\nRAW RESPONSE:\n{raw_text}"}
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        humanized = response.choices[0].message.content
+        if humanized and humanized.strip():
+            logger.info(f"[HUMANIZER] Raw {len(raw_text)} chars -> Humanized {len(humanized)} chars")
+            return humanized.strip()
+        return raw_text
+    except Exception as e:
+        logger.warning(f"[HUMANIZER] Failed, using raw response: {e}")
+        return raw_text
 
 # Conversation history: {user_id: {"messages": [...], "timestamp": float}}
 CONVERSATION_HISTORY: dict[str, dict] = {}
@@ -324,6 +351,7 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             # Don't return text when media is present — media message is sufficient
             if pending_media:
                 return {"text": "", "media": pending_media}
+            final_text = humanize_response(final_text, user_name)
             return {"text": final_text, "media": pending_media}
 
         # Process tool calls
@@ -368,8 +396,6 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
                 result = execute_function(func_name, converted_args, user_role)
 
             # Log function result for debugging
-            import logging
-            logger = logging.getLogger("webhook")
             result_str = json.dumps(result, default=str)
             logger.info(f"[FUNC_RESULT] {func_name} | args={func_args} | result={result_str}")
 
@@ -382,4 +408,5 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
     # If we've exceeded iterations, save what we have and return
     final_text = "I processed your request but needed more steps. Please try a simpler query."
     _save_history(user_id, messages + [{"role": "assistant", "content": final_text}])
+    final_text = humanize_response(final_text, user_name)
     return {"text": final_text, "media": pending_media}

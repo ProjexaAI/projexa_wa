@@ -330,11 +330,27 @@ async def handle_webhook(request: Request):
     else:
         return {"status": "invalid_message_format"}
 
-    # Resolve phone number
-    if raw_from.endswith("@lid"):
-        phone = await resolve_lid_to_phone(raw_from) or raw_from.replace("@lid", "")
+    # Handle group messages (@g.us) — all group messages treated as master admin
+    is_group = raw_from.endswith("@g.us")
+    if is_group:
+        # Extract sender's phone from author/sender field
+        sender_phone = data.get("author", "") or data.get("sender", "") or data.get("participant", "")
+        if sender_phone:
+            phone = sender_phone.replace("@c.us", "").replace("@lid", "")
+        else:
+            await send_whatsapp_message(phone, "I couldn't identify who sent this message.", chat_id=raw_from)
+            return {"status": "group_sender_unknown"}
+        chat_id = raw_from
+        logger.info(f"[GROUP-ADMIN] {raw_from} | sender={phone} | {text[:80]}")
     else:
-        phone = raw_from.replace("@c.us", "")
+        chat_id = None  # Reply to individual
+
+    # Resolve phone number
+    if not is_group:
+        if raw_from.endswith("@lid"):
+            phone = await resolve_lid_to_phone(raw_from) or raw_from.replace("@lid", "")
+        else:
+            phone = raw_from.replace("@c.us", "")
 
     # Handle different message types
     if msg_type == "image":
@@ -351,10 +367,54 @@ async def handle_webhook(request: Request):
     if not text.strip() and msg_type != "document":
         return {"status": "empty_message"}
 
+    # Group: handle "switch user" command
+    if is_group and text.lower().startswith("switch user"):
+        query = text[len("switch user"):].strip()
+        if not query:
+            await send_whatsapp_message(phone, "Usage: switch user <email, roll number, or name>", chat_id=chat_id)
+            return {"status": "switch_usage"}
+        results = _search_users(query)
+        if not results:
+            await send_whatsapp_message(phone, f"No users found matching: {query}", chat_id=chat_id)
+            return {"status": "switch_no_match"}
+        if len(results) == 1:
+            target = results[0]
+            MASTER_ADMIN_STATES[phone] = {"state": "IMPERSONATING", "target": target}
+            name = target.get("name", "Unknown")
+            role = _get_highest_role(target.get("roles"))
+            uid = str(target["_id"])
+            logger.info(f"[GROUP-ADMIN] {phone} switched to {name} ({role}, {uid})")
+            await send_whatsapp_message(phone, f"Now acting as *{name}* ({role}).\nUser ID: {uid}", chat_id=chat_id)
+            return {"status": "switched"}
+        else:
+            MASTER_ADMIN_STATES[phone] = {"state": "AWAITING_SELECTION", "results": results}
+            await send_whatsapp_message(phone, _format_user_list(results), chat_id=chat_id)
+            return {"status": "switch_select"}
+
+    # Group: handle selection from switch user list
+    if is_group and MASTER_ADMIN_STATES.get(phone, {}).get("state") == "AWAITING_SELECTION":
+        try:
+            choice = int(text.strip())
+        except ValueError:
+            await send_whatsapp_message(phone, "Please reply with a number (e.g., 1, 2, 3).", chat_id=chat_id)
+            return {"status": "switch_invalid"}
+        results = MASTER_ADMIN_STATES[phone].get("results", [])
+        if choice < 1 or choice > len(results):
+            await send_whatsapp_message(phone, f"Please pick a number between 1 and {len(results)}.", chat_id=chat_id)
+            return {"status": "switch_invalid"}
+        target = results[choice - 1]
+        MASTER_ADMIN_STATES[phone] = {"state": "IMPERSONATING", "target": target}
+        name = target.get("name", "Unknown")
+        role = _get_highest_role(target.get("roles"))
+        uid = str(target["_id"])
+        logger.info(f"[GROUP-ADMIN] {phone} switched to {name} ({role}, {uid})")
+        await send_whatsapp_message(phone, f"Now acting as *{name}* ({role}).\nUser ID: {uid}", chat_id=chat_id)
+        return {"status": "switched"}
+
     # Master admin mode intercept
-    master_handled, master_response = await _handle_master_admin(phone, text, raw_from)
+    master_handled, master_response = await _handle_master_admin(phone, text, chat_id)
     if master_handled:
-        await send_whatsapp_message(phone, master_response, chat_id=raw_from)
+        await send_whatsapp_message(phone, master_response, chat_id=chat_id)
         return {"status": "master_admin"}
 
     # Check if this phone is impersonating a user
@@ -365,11 +425,22 @@ async def handle_webhook(request: Request):
         user_name = target.get("name", "User")
         user_role = _get_highest_role(target.get("roles"))
         logger.info(f"Impersonating: {phone} -> {user_name} ({user_role}) | {text[:80]}")
+    elif is_group:
+        # Group: auto-impersonate sender if not already switched
+        user = get_user_by_phone(phone)
+        if not user:
+            await send_whatsapp_message(phone, "You are not registered in the system.", chat_id=chat_id)
+            return {"status": "user_not_found"}
+        MASTER_ADMIN_STATES[phone] = {"state": "IMPERSONATING", "target": user}
+        user_id = str(user["_id"])
+        user_name = user.get("name", "User")
+        user_role = _get_highest_role(user.get("roles"))
+        logger.info(f"[GROUP-AUTO] {phone} auto-impersonating {user_name} ({user_role})")
     else:
         # Normal flow: look up user
         user = get_user_by_phone(phone)
         if not user:
-            await send_whatsapp_message(phone, "You are not registered in the system. Please contact admin.", chat_id=raw_from)
+            await send_whatsapp_message(phone, "You are not registered in the system. Please contact admin.", chat_id=chat_id)
             return {"status": "user_not_found"}
         user_id = str(user["_id"])
         user_name = user.get("name", "User")
@@ -407,7 +478,7 @@ async def handle_webhook(request: Request):
             logger.info(f"Passing to AI: {file_info[:200]}")
         except Exception as e:
             logger.error(f"Document upload error: {phone} | {e}")
-            await send_whatsapp_message(phone, f"Failed to process document: {str(e)}", chat_id=raw_from)
+            await send_whatsapp_message(phone, f"Failed to process document: {str(e)}", chat_id=chat_id)
             return {"status": "upload_error", "detail": str(e)}
 
     try:
@@ -421,19 +492,19 @@ async def handle_webhook(request: Request):
             media_type = media.get("type", "document")
             caption = media.get("caption", "")
             if media_type == "image":
-                await send_whatsapp_image(phone, media_url, caption, chat_id=raw_from)
+                await send_whatsapp_image(phone, media_url, caption, chat_id=chat_id)
             elif media_type == "video":
-                await send_whatsapp_video(phone, media_url, caption, chat_id=raw_from)
+                await send_whatsapp_video(phone, media_url, caption, chat_id=chat_id)
             elif media_type == "document":
-                await send_whatsapp_document(phone, media_url, caption, chat_id=raw_from)
+                await send_whatsapp_document(phone, media_url, caption, chat_id=chat_id)
             logger.info(f"Sent {media_type} to {phone}")
 
         if response_text:
-            await send_whatsapp_message(phone, response_text, chat_id=raw_from)
+            await send_whatsapp_message(phone, response_text, chat_id=chat_id)
         return {"status": "sent"}
     except Exception as e:
         logger.error(f"Error: {phone} | {e}")
-        await send_whatsapp_message(phone, "Sorry, something went wrong. Please try again.", chat_id=raw_from)
+        await send_whatsapp_message(phone, "Sorry, something went wrong. Please try again.", chat_id=chat_id)
         return {"status": "error", "detail": str(e)}
 
 

@@ -292,6 +292,43 @@ def _save_history(user_id: str, messages: list):
     }
 
 
+def _is_casual_message(message: str) -> bool:
+    """Use AI to detect if message is casual/off-topic (not internship-related)."""
+    try:
+        response = client.chat.completions.create(
+            model=OPENCODE_MODEL,
+            messages=[
+                {"role": "system", "content": "You are a classifier. Reply ONLY with 'CASUAL' or 'SERIAL'.\n\nCASUAL = greetings, jokes, off-topic, random chat, memes, personal talk, thank you, bye, emojis only, anything not related to internship management.\n\nSERIOUS = questions about attendance, documents, mentor, team, track, enrollment, scores, sessions, announcements, onboarding, or any internship-related query."},
+                {"role": "user", "content": message}
+            ],
+            temperature=0,
+            max_tokens=10
+        )
+        result = response.choices[0].message.content.strip().upper()
+        return "CASUAL" in result
+    except Exception as e:
+        logger.warning(f"[CASUAL_CHECK] AI classification failed, defaulting to serious: {e}")
+        return False  # Default to serious (use main AI) on error
+
+
+def _get_casual_response(message: str, user_name: str) -> str:
+    """Use AI to generate a natural casual response."""
+    try:
+        response = client.chat.completions.create(
+            model=OPENCODE_MODEL,
+            messages=[
+                {"role": "system", "content": f"You are {user_name}'s friendly chatbot on WhatsApp. The user is sending casual/off-topic messages — jokes, random chat, greetings, etc. Respond naturally like a friend would. Keep it short (1-2 lines). Be playful, witty, human. Don't mention internships or the system unless they ask. Don't say you're an AI."},
+                {"role": "user", "content": message}
+            ],
+            temperature=0.8,
+            max_tokens=100
+        )
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.warning(f"[CASUAL] AI response failed: {e}")
+        return "Haha nice 😄"
+
+
 def process_message(user_id: str, user_name: str, user_role: str, message: str) -> dict:
     """
     Process a user message and return a response with optional media.
@@ -304,6 +341,10 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
                 - type (str): "image", "video", "document", or "audio"
                 - caption (str): Optional caption
     """
+    # Bypass main AI for casual/off-topic messages
+    if _is_casual_message(message):
+        return {"text": _get_casual_response(message, user_name), "media": []}
+
     allowed = get_allowed_collections(user_role)
     allowed_read = allowed["read"]
     allowed_write = allowed["write"]

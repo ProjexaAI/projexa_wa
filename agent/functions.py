@@ -1088,7 +1088,7 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
 def get_announcement(announcement_id: str) -> dict:
     ann = get_collection("announcements").find_one(
         {"_id": ObjectId(announcement_id)},
-        {"recipientStatuses": 0}  # Exclude heavy recipient list
+        {"recipientStatuses": 0, "readBy": 0}  # Exclude heavy arrays
     )
     if not ann:
         return {"error": "Announcement not found"}

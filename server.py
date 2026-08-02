@@ -25,6 +25,15 @@ from agent.document_upload import download_media_from_openwa, upload_to_r2
 from agent.functions import get_user_by_email, list_users
 from agent.db import get_collection
 
+# Role priority: higher index = higher privilege
+ROLE_PRIORITY = {"STUDENT": 0, "MENTOR": 1, "PLACEMENT_COORDINATOR": 2, "ADMIN": 3}
+
+def _get_highest_role(roles: list[str] | None) -> str:
+    """Return the highest-privilege role from a user's roles list."""
+    if not roles:
+        return "STUDENT"
+    return max(roles, key=lambda r: ROLE_PRIORITY.get(r, 0))
+
 app = FastAPI(title="Projexa WhatsApp Agent")
 
 # Master admin state: {phone: {"state": "AWAITING_TARGET" | "IMPERSONATING", "target": user_dict}}
@@ -184,7 +193,7 @@ def _format_user_list(users: list[dict]) -> str:
     lines = [f"Found {len(users)} user(s):\n"]
     for i, user in enumerate(users, 1):
         name = user.get("name", "Unknown")
-        role = (user.get("roles") or ["STUDENT"])[0]
+        role = _get_highest_role(user.get("roles"))
         email = user.get("email", "N/A")
         roll = user.get("rollNumber", "N/A")
         phone = user.get("mobileNumber", "N/A")
@@ -246,7 +255,7 @@ async def _handle_master_admin(phone: str, text: str, chat_id: str) -> tuple[boo
                 "target": target_user
             }
             target_name = target_user.get("name", "Unknown")
-            target_role = (target_user.get("roles") or ["STUDENT"])[0]
+            target_role = _get_highest_role(target_user.get("roles"))
             target_id = str(target_user["_id"])
             logger.info(f"[MASTER_ADMIN] {phone} now impersonating {target_name} ({target_role}, {target_id})")
             return True, (
@@ -278,7 +287,7 @@ async def _handle_master_admin(phone: str, text: str, chat_id: str) -> tuple[boo
             "target": target_user
         }
         target_name = target_user.get("name", "Unknown")
-        target_role = (target_user.get("roles") or ["STUDENT"])[0]
+        target_role = _get_highest_role(target_user.get("roles"))
         target_id = str(target_user["_id"])
         logger.info(f"[MASTER_ADMIN] {phone} now impersonating {target_name} ({target_role}, {target_id})")
         return True, (
@@ -354,7 +363,7 @@ async def handle_webhook(request: Request):
         target = admin_state["target"]
         user_id = str(target["_id"])
         user_name = target.get("name", "User")
-        user_role = (target.get("roles") or ["STUDENT"])[0]
+        user_role = _get_highest_role(target.get("roles"))
         logger.info(f"Impersonating: {phone} -> {user_name} ({user_role}) | {text[:80]}")
     else:
         # Normal flow: look up user
@@ -364,7 +373,7 @@ async def handle_webhook(request: Request):
             return {"status": "user_not_found"}
         user_id = str(user["_id"])
         user_name = user.get("name", "User")
-        user_role = (user.get("roles") or ["STUDENT"])[0]
+        user_role = _get_highest_role(user.get("roles"))
         logger.info(f"Incoming: {phone} ({user_role}) | {text[:80]}")
 
     # For documents: upload to R2, then pass file info to AI

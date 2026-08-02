@@ -61,11 +61,19 @@ def _serialize(doc):
 # USER CONTEXT (for system prompt enrichment)
 # ============================================================
 
+_ROLE_PRIORITY = {"STUDENT": 0, "MENTOR": 1, "PLACEMENT_COORDINATOR": 2, "ADMIN": 3}
+
+def _get_highest_role(roles: list[str] | None) -> str:
+    """Return the highest-privilege role from a user's roles list."""
+    if not roles:
+        return "STUDENT"
+    return max(roles, key=lambda r: _ROLE_PRIORITY.get(r, 0))
+
 def get_user_context(user_id: str, role: str = None) -> str:
     """Build role-specific context string with pre-fetched user data."""
     if not role:
         user = get_collection("users").find_one({"_id": ObjectId(user_id)})
-        role = (user.get("roles") or ["STUDENT"])[0] if user else "STUDENT"
+        role = _get_highest_role(user.get("roles")) if user else "STUDENT"
     
     cache_key = f"context:{user_id}:{role}"
     cached = _get_cache(cache_key)

@@ -324,8 +324,15 @@ async def handle_webhook(request: Request):
         return {"status": "duplicate"}
 
     # Skip bot's own messages to avoid infinite loops
-    if isinstance(data, dict) and data.get("fromMe"):
-        return {"status": "ignored_self"}
+    # In groups: messages with @wa are from admins, messages without @wa are from bot
+    if isinstance(data, dict):
+        msg_body = str(data.get("body", ""))
+        is_group_check = data.get("from", "").endswith("@g.us")
+        if is_group_check and "@wa" not in msg_body.lower():
+            return {"status": "ignored_bot"}
+        # For DMs: skip if fromMe
+        if not is_group_check and data.get("fromMe"):
+            return {"status": "ignored_self"}
 
     message = data.get("body", data)
     raw_from = data.get("from", "") if isinstance(message, str) else message.get("from", data.get("from", ""))
@@ -347,17 +354,15 @@ async def handle_webhook(request: Request):
     # Handle group messages (@g.us) — all group messages treated as master admin
     is_group = raw_from.endswith("@g.us")
     if is_group:
-        # Debug: log full data dict to see available fields
-        logger.info(f"[GROUP-DEBUG] raw_from={raw_from}")
-        logger.info(f"[GROUP-DEBUG] data keys={list(data.keys())}")
-        logger.info(f"[GROUP-DEBUG] data={json.dumps(data, default=str, indent=2)[:2000]}")
+        # Strip @wa trigger from text
+        text = text.replace("@wa", "").replace("@WA", "").strip()
+        logger.info(f"[GROUP] {raw_from} | text={text[:80]}")
         # Extract sender's phone from author/sender field
         sender_phone = data.get("author", "") or data.get("sender", "") or data.get("participant", "")
         if sender_phone:
             phone = sender_phone.replace("@c.us", "").replace("@lid", "")
         else:
-            logger.warning(f"[GROUP-DEBUG] No sender identified! data keys={list(data.keys())}")
-            logger.warning(f"[GROUP-DEBUG] author={data.get('author')}, sender={data.get('sender')}, participant={data.get('participant')}")
+            logger.warning(f"[GROUP] No sender identified! author={data.get('author')}, sender={data.get('sender')}, participant={data.get('participant')}")
             await send_whatsapp_message(phone, "I couldn't identify who sent this message.", chat_id=raw_from)
             return {"status": "group_sender_unknown"}
         chat_id = raw_from

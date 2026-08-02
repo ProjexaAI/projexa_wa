@@ -58,7 +58,7 @@ def _is_duplicate_webhook(idempotency_key: str) -> bool:
 
 
 async def send_whatsapp_message(phone: str, text: str, chat_id: str | None = None):
-    text = text + "\n\n_🤖 This is an AI assistant. Information may not always be accurate. Please verify important details on the portal._"
+    # text = text + "\n\n_🤖 This is an AI assistant. Information may not always be accurate. Please verify important details on the portal._"
     async with httpx.AsyncClient(timeout=30.0) as client:
         url = f"{OPENWA_API_URL}/sessions/{OPENWA_SESSION_ID}/messages/send-text"
         headers = {"Content-Type": "application/json", "X-API-Key": OPENWA_API_KEY}

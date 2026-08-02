@@ -311,13 +311,21 @@ async def handle_webhook(request: Request):
     if isinstance(data, dict):
         logger.info(f"[WEBHOOK-IN] from={data.get('from', 'N/A')} | type={data.get('type', 'N/A')} | body_preview={str(data.get('body', ''))[:200]}")
 
-    if event != "message.received":
+    # For groups: accept both message.received and message.sent
+    is_group_msg = isinstance(data, dict) and data.get("from", "").endswith("@g.us")
+    if event == "message.sent" and not is_group_msg:
+        return {"status": "ignored"}
+    if event not in ("message.received", "message.sent"):
         return {"status": "ignored"}
 
     idempotency_key = body.get("idempotencyKey")
     if idempotency_key and _is_duplicate_webhook(idempotency_key):
         logger.info(f"[WEBHOOK-IN] Duplicate webhook, skipping: {idempotency_key}")
         return {"status": "duplicate"}
+
+    # Skip bot's own messages to avoid infinite loops
+    if isinstance(data, dict) and data.get("fromMe"):
+        return {"status": "ignored_self"}
 
     message = data.get("body", data)
     raw_from = data.get("from", "") if isinstance(message, str) else message.get("from", data.get("from", ""))

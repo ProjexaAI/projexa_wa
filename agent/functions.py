@@ -1060,7 +1060,7 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
             ]
             items = list(get_collection("announcements").aggregate(pipeline))
         else:
-            items = list(get_collection("announcements").find(query, {"readBy": 0}).skip(skip).limit(page_size).sort("createdAt", -1))
+            items = list(get_collection("announcements").find(query, {"readBy": 0, "recipientStatuses": 0}).skip(skip).limit(page_size).sort("createdAt", -1))
 
         # Extract the current user's recipient status from each announcement
         if user_id:
@@ -1070,20 +1070,29 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
                 item["recipientRole"] = recipient.get("role") if recipient else None
                 read_entry = item.get("readBy", [None])[0] if item.get("readBy") else None
                 item["isRead"] = read_entry is not None
+                # Strip heavy arrays
+                item.pop("recipientStatuses", None)
+                item.pop("readBy", None)
 
         return {"items": _serialize(items), "total": total, "page": page, "pageSize": page_size}
     except Exception as e:
         # Fallback: try to return all announcements
         try:
             total = get_collection("announcements").count_documents({})
-            items = list(get_collection("announcements").find({}).limit(20).sort("createdAt", -1))
+            items = list(get_collection("announcements").find({}, {"readBy": 0, "recipientStatuses": 0}).limit(20).sort("createdAt", -1))
             return {"items": _serialize(items), "total": total, "page": 1, "pageSize": 20, "warning": f"Query failed: {str(e)}"}
         except Exception:
             return {"items": [], "total": 0, "page": 1, "pageSize": 20, "error": str(e)}
 
 
 def get_announcement(announcement_id: str) -> dict:
-    return _serialize(get_collection("announcements").find_one({"_id": ObjectId(announcement_id)}))
+    ann = get_collection("announcements").find_one(
+        {"_id": ObjectId(announcement_id)},
+        {"recipientStatuses": 0}  # Exclude heavy recipient list
+    )
+    if not ann:
+        return {"error": "Announcement not found"}
+    return _serialize(ann)
 
 
 def get_announcement_attachments(announcement_id: str) -> dict:

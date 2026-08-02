@@ -7,6 +7,20 @@ ROLE_PERMISSIONS = {
         "read": "*",  # all collections
         "write": "*"
     },
+    "PLACEMENT_COORDINATOR": {
+        "read": [
+            "users", "studenttrackenrollments", "enrollmentmentorassignments",
+            "studentattendances", "tracks", "tracksessionconfigs",
+            "mentorstudentinteractions", "mentorinteractionsessions",
+            "studentprogresses", "mentorevaluationscores",
+            "announcements"
+        ],
+        "write": [
+            "studentattendances", "mentorstudentinteractions",
+            "mentorinteractionsessions", "mentorevaluationscores",
+            "studentprogresses"
+        ]
+    },
     "MENTOR": {
         "read": [
             "users", "studenttrackenrollments", "enrollmentmentorassignments",

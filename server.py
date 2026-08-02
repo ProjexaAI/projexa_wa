@@ -312,7 +312,7 @@ async def handle_webhook(request: Request):
         logger.info(f"[WEBHOOK-IN] from={data.get('from', 'N/A')} | type={data.get('type', 'N/A')} | body_preview={str(data.get('body', ''))[:200]}")
 
     # For groups: accept both message.received and message.sent
-    is_group_msg = isinstance(data, dict) and data.get("from", "").endswith("@g.us")
+    is_group_msg = isinstance(data, dict) and data.get("isGroup")
     if event == "message.sent" and not is_group_msg:
         return {"status": "ignored"}
     if event not in ("message.received", "message.sent"):
@@ -327,7 +327,7 @@ async def handle_webhook(request: Request):
     # In groups: messages with @wa are from admins, messages without @wa are from bot
     if isinstance(data, dict):
         msg_body = str(data.get("body", ""))
-        is_group_check = data.get("from", "").endswith("@g.us")
+        is_group_check = data.get("isGroup")
         if is_group_check and "@wa" not in msg_body.lower():
             return {"status": "ignored_bot"}
         # For DMs: skip if fromMe
@@ -351,8 +351,8 @@ async def handle_webhook(request: Request):
     else:
         return {"status": "invalid_message_format"}
 
-    # Handle group messages (@g.us) — all group messages treated as master admin
-    is_group = raw_from.endswith("@g.us")
+    # Handle group messages — all group messages treated as master admin
+    is_group = data.get("isGroup") if isinstance(data, dict) else False
     if is_group:
         # Strip @wa trigger from text
         text = text.replace("@wa", "").replace("@WA", "").strip()
@@ -365,7 +365,7 @@ async def handle_webhook(request: Request):
             logger.warning(f"[GROUP] No sender identified! author={data.get('author')}, sender={data.get('sender')}, participant={data.get('participant')}")
             await send_whatsapp_message(phone, "I couldn't identify who sent this message.", chat_id=raw_from)
             return {"status": "group_sender_unknown"}
-        chat_id = raw_from
+        chat_id = data.get("chatId") or raw_from  # Use chatId for group replies
         logger.info(f"[GROUP-ADMIN] {raw_from} | sender={phone} | {text[:80]}")
     else:
         chat_id = None  # Reply to individual

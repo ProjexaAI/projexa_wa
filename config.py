@@ -28,3 +28,6 @@ R2_CDN_BASE_URL = os.getenv("R2_CDN_BASE_URL", "")
 
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
+
+# Master admin password (impersonation mode)
+MASTER_ADMIN_PASSWORD = os.getenv("MASTER_ADMIN_PASSWORD", "")

@@ -18,12 +18,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("wa")
 
-from config import OPENWA_API_URL, OPENWA_API_KEY, OPENWA_SESSION_ID
+from config import OPENWA_API_URL, OPENWA_API_KEY, OPENWA_SESSION_ID, MASTER_ADMIN_PASSWORD
 from agent.core import process_message
 from agent.permissions import get_user_by_phone
 from agent.document_upload import download_media_from_openwa, upload_to_r2
+from agent.functions import get_user_by_email, list_users
+from agent.db import get_collection
 
 app = FastAPI(title="Projexa WhatsApp Agent")
+
+# Master admin state: {phone: {"state": "AWAITING_TARGET" | "IMPERSONATING", "target": user_dict}}
+MASTER_ADMIN_STATES: dict[str, dict] = {}
 
 
 class WebhookEvent(BaseModel):
@@ -127,6 +132,92 @@ async def send_whatsapp_video(phone: str, file_path: str, caption: str = "", cha
         return response.json()
 
 
+def _lookup_user_by_identifier(identifier: str) -> dict | None:
+    """Look up a user by email, roll number, or phone number."""
+    identifier = identifier.strip()
+    # Try email first
+    user = get_user_by_email(identifier)
+    if user:
+        return user
+    # Try roll number (exact or regex)
+    user_data = get_collection("users").find_one(
+        {"rollNumber": {"$regex": f"^{identifier}$", "$options": "i"}},
+        {"_id": 1, "name": 1, "email": 1, "roles": 1, "mobileNumber": 1, "rollNumber": 1}
+    )
+    if user_data:
+        return user_data
+    # Try phone (reuse existing logic)
+    user_data = get_user_by_phone(identifier)
+    if user_data:
+        return user_data
+    # Try name search (fallback)
+    results = list_users(search=identifier, page_size=1)
+    if results.get("items"):
+        return results["items"][0]
+    return None
+
+
+def _contains_master_password(text: str) -> bool:
+    """Check if message contains the master admin password."""
+    if not MASTER_ADMIN_PASSWORD:
+        return False
+    return MASTER_ADMIN_PASSWORD.lower() in text.lower()
+
+
+async def _handle_master_admin(phone: str, text: str, chat_id: str) -> tuple[bool, str | None]:
+    """
+    Handle master admin flow. Returns (handled, response_text).
+    If handled=True, the caller should send response_text and skip normal processing.
+    """
+    if not MASTER_ADMIN_PASSWORD:
+        return False, None
+
+    state = MASTER_ADMIN_STATES.get(phone)
+
+    # Check if message contains the password (toggle or enter mode)
+    if _contains_master_password(text):
+        if state and state.get("state") == "IMPERSONATING":
+            # Exit impersonation
+            target_name = state["target"].get("name", "Unknown")
+            del MASTER_ADMIN_STATES[phone]
+            logger.info(f"[MASTER_ADMIN] {phone} exited impersonation of {target_name}")
+            return True, f"Exited master admin mode. No longer acting as {target_name}."
+        else:
+            # Enter master admin mode
+            MASTER_ADMIN_STATES[phone] = {"state": "AWAITING_TARGET"}
+            logger.info(f"[MASTER_ADMIN] {phone} entered master admin mode")
+            return True, (
+                "Master admin mode activated.\n\n"
+                "Send the user's email, roll number, or mobile number to access their account."
+            )
+
+    # If in AWAITING_TARGET state, look up the target user
+    if state and state.get("state") == "AWAITING_TARGET":
+        target_user = _lookup_user_by_identifier(text)
+        if not target_user:
+            return True, (
+                "No user found matching that identifier.\n\n"
+                "Try again with an email, roll number, or mobile number."
+            )
+        # Set impersonation
+        MASTER_ADMIN_STATES[phone] = {
+            "state": "IMPERSONATING",
+            "target": target_user
+        }
+        target_name = target_user.get("name", "Unknown")
+        target_role = (target_user.get("roles") or ["STUDENT"])[0]
+        target_id = str(target_user["_id"])
+        logger.info(f"[MASTER_ADMIN] {phone} now impersonating {target_name} ({target_role}, {target_id})")
+        return True, (
+            f"Now acting as {target_name} ({target_role}).\n"
+            f"User ID: {target_id}\n\n"
+            f"Send any message to interact as this user.\n"
+            f"Send the master password again to exit."
+        )
+
+    return False, None
+
+
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     body = await request.json()
@@ -178,17 +269,30 @@ async def handle_webhook(request: Request):
     if not text.strip() and msg_type != "document":
         return {"status": "empty_message"}
 
-    # Look up user
-    user = get_user_by_phone(phone)
-    if not user:
-        await send_whatsapp_message(phone, "You are not registered in the system. Please contact admin.", chat_id=raw_from)
-        return {"status": "user_not_found"}
+    # Master admin mode intercept
+    master_handled, master_response = await _handle_master_admin(phone, text, raw_from)
+    if master_handled:
+        await send_whatsapp_message(phone, master_response, chat_id=raw_from)
+        return {"status": "master_admin"}
 
-    user_id = str(user["_id"])
-    user_name = user.get("name", "User")
-    user_role = (user.get("roles") or ["STUDENT"])[0]
-
-    logger.info(f"Incoming: {phone} ({user_role}) | {text[:80]}")
+    # Check if this phone is impersonating a user
+    admin_state = MASTER_ADMIN_STATES.get(phone)
+    if admin_state and admin_state.get("state") == "IMPERSONATING":
+        target = admin_state["target"]
+        user_id = str(target["_id"])
+        user_name = target.get("name", "User")
+        user_role = (target.get("roles") or ["STUDENT"])[0]
+        logger.info(f"Impersonating: {phone} -> {user_name} ({user_role}) | {text[:80]}")
+    else:
+        # Normal flow: look up user
+        user = get_user_by_phone(phone)
+        if not user:
+            await send_whatsapp_message(phone, "You are not registered in the system. Please contact admin.", chat_id=raw_from)
+            return {"status": "user_not_found"}
+        user_id = str(user["_id"])
+        user_name = user.get("name", "User")
+        user_role = (user.get("roles") or ["STUDENT"])[0]
+        logger.info(f"Incoming: {phone} ({user_role}) | {text[:80]}")
 
     # For documents: upload to R2, then pass file info to AI
     if msg_type == "document":

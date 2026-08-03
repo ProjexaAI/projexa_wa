@@ -850,18 +850,19 @@ def get_attendance_stats(enrollment_id: str = None, student_id: str = None) -> d
 # ============================================================
 
 def get_score_ledger(enrollment_id: str) -> list:
-    """Get score ledger for enrollment, filtered to only include entries matching active components."""
+    """Get score ledger for enrollment, filtered to only include entries matching active components.
+
+    Resolves parent track components to match website behavior.
+    """
     enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(enrollment_id)})
     if not enrollment:
         return []
 
-    # Only use components from the enrollment's own track config
+    # Resolve active components including parent track (matching website behavior)
     active_comp_ids = set()
-    track = get_collection("tracksessionconfigs").find_one({"_id": enrollment.get("trackSessionConfigId")})
-    if track:
-        for c in (track.get("assessmentComponents") or []):
-            if c.get("isActive"):
-                active_comp_ids.add(str(c["_id"]))
+    for c in _resolve_assessment_components(enrollment.get("trackSessionConfigId")):
+        if c.get("isActive"):
+            active_comp_ids.add(str(c["_id"]))
 
     query = {"enrollmentId": ObjectId(enrollment_id)}
     if active_comp_ids:

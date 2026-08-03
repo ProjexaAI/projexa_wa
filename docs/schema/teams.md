@@ -35,6 +35,8 @@ Team invitations.
 {
   _id: ObjectId,
   teamId: ObjectId,
+  sessionId: ObjectId,             // ref: "AcademicYear"
+  trackSessionConfigId: ObjectId,  // ref: "TrackSessionConfig"
   inviterId: ObjectId,
   inviteeId: ObjectId,
   status: String,                  // "PENDING" | "ACCEPTED" | "DECLINED"

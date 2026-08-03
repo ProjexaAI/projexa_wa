@@ -14,12 +14,24 @@ Student attendance records.
   _id: ObjectId,
   enrollmentId: ObjectId,          // ref: "StudentTrackEnrollment"
   studentId: ObjectId,             // ref: "User"
+  trackSessionConfigId: ObjectId,  // ref: "TrackSessionConfig"
   trackId: ObjectId,               // ref: "Track"
+  sessionId: ObjectId,             // ref: "AcademicYear"
   dateKey: String,                 // format: "YYYY-MM-DD"
   attendanceSession: String,       // "MORNING" | "EVENING"
   status: String,                  // "PRESENT" | "ABSENT"
+  markedByMentorId: ObjectId,      // ref: "User"
+  markedAt: Date,
   source: String,                  // "MANUAL" | "QR_SCAN"
-  markedAt: Date
+  evidence: {                      // embedded — scan evidence (nullable)
+    attendanceScanSessionId: ObjectId,
+    selfieUrl: String,
+    scanTime: Date,
+    device: {browser: String, os: String, deviceIdHash: String, userAgent: String},
+    gps: {latitude: Number, longitude: Number, accuracyMeters: Number, capturedAt: Date},
+    distanceFromMentorMeters: Number,
+    confidence: String             // "HIGH" | "REVIEW" | "SUSPICIOUS"
+  }
 }
 ```
 

@@ -19,6 +19,8 @@ User accounts (students, mentors, admins).
   mobileNumber: String,
   programme: String,
   section: String,
+  studentYear: String,
+  profilePicture: String,          // CDN URL to profile photo (may be null)
   isActive: Boolean,
   isDefaulter: Boolean
 }
@@ -38,6 +40,11 @@ Academic session/year definitions.
   sessionTerm: String,             // "ODD" | "EVEN"
   startDate: Date,
   endDate: Date,
+  academicYears: [{                // embedded — year level config
+    level: Number,                 // 1-4
+    label: String,
+    isEnabled: Boolean
+  }],
   isActive: Boolean,
   isArchived: Boolean
 }
@@ -55,7 +62,16 @@ Track definitions (courses/programs).
   name: String,
   code: String,
   trackType: String,               // "GROUP" | "OPTION"
-  description: String
+  allowMentorSubTracks: Boolean,
+  parentTrackId: ObjectId,         // ref: "Track" (self-ref for sub-tracks)
+  sortOrder: Number,
+  description: String,
+  program: {                       // embedded — course content
+    overview: String,
+    learningOutcomes: [String],
+    deliverables: [String],
+    days: [{dayNumber: Number, title: String, description: String, objectives: [String]}]
+  }
 }
 ```
 
@@ -74,6 +90,65 @@ Links a track to an academic session with settings.
   mode: String,                    // "INDIVIDUAL" | "TEAM"
   minTeamSize: Number,
   maxTeamSize: Number,
+  maxTeamsPerMentor: Number,
+  teamSourceMode: String,          // "PREDEFINED_ONLY" | "SELF_CREATE_ONLY" | "BOTH"
+  allowTrackChangeRequest: Boolean,
+  eligibilityRules: [{             // embedded — who can enroll
+    yearLevel: Number,
+    programmeCode: String,
+    sectionCode: String,
+    isActive: Boolean
+  }],
+  documentTemplates: [{            // embedded — required documents
+    _id: ObjectId,
+    code: String,
+    title: String,
+    isMandatory: Boolean,
+    appliesTo: String,             // "STUDENT" | "TEAM" | "BOTH"
+    submissionPhase: String,       // "ONBOARDING" | "ADDITIONAL"
+    requiresApproval: Boolean,
+    submissionMode: String,        // "SINGLE" | "MULTIPLE"
+    maxFiles: Number,
+    allowedFileTypes: [String],
+    isActive: Boolean
+  }],
+  intakeTemplate: {                // embedded — intake form (nullable)
+    _id: ObjectId,
+    title: String,
+    isActive: Boolean,
+    fields: [{key: String, label: String, type: String, required: Boolean}]
+  },
+  assessmentComponents: [{         // embedded — grading criteria
+    _id: ObjectId,
+    code: String,
+    title: String,
+    type: String,                  // "DOCUMENT" | "INTERACTION" | "FINAL_EVALUATION" | "ATTENDANCE" | "MENTOR_EVALUATION" | "FINAL_YEAR_MENTOR_EVALUATION" | "EMAIL" | "MANUAL"
+    maxMarks: Number,
+    yearMarks: Map,                // per-year marks override
+    displayOrder: Number,
+    isActive: Boolean,
+    yearLevels: [Number],
+    rolloverPolicy: String,        // "NONE" | "PERCENTAGE_TO_CURRENT_COMPONENT"
+    mentorEvaluationFields: [{label: String, maxMarks: Number}]
+  }],
+  rubricTemplates: [{              // embedded — rubric grading
+    _id: ObjectId,
+    version: Number,
+    totalMarks: Number,
+    isActive: Boolean
+  }],
+  interactionTemplates: [{         // embedded — interaction sessions
+    _id: ObjectId,
+    code: String,
+    interactionNumber: Number,
+    title: String,
+    description: String,
+    startsAt: Date,
+    endsAt: Date,
+    totalMarks: Number,
+    isActive: Boolean,
+    questions: [{key: String, prompt: String, questionType: String, maxMarks: Number, displayOrder: Number}]
+  }],
   maxTotalMarks: Number
 }
 ```
@@ -94,9 +169,15 @@ Student's enrollment in a track session.
   trackSessionConfigId: ObjectId,  // ref: "TrackSessionConfig"
   status: String,                  // "PENDING_ONBOARDING" | "ENROLLED" | "ACTIVE" | "INACTIVE" | "SWITCHED_OUT" | "COMPLETED"
   section: String,
+  isActive: Boolean,
   mentorId: ObjectId,              // ref: "User"
   isOnboardingSubmitted: Boolean,
+  onboardingSubmittedAt: Date,
   startedAt: Date,
-  endedAt: Date
+  activatedAt: Date,
+  endedAt: Date,
+  endedReason: String,
+  switchedFromEnrollmentId: ObjectId,  // ref: "StudentTrackEnrollment" (self-ref)
+  switchRequestId: ObjectId        // ref: "TrackSwitchRequest"
 }
 ```

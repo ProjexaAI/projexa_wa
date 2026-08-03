@@ -107,6 +107,8 @@ def _build_student_context(user_id: str) -> str:
         lines.append(f"- Programme: {user.get('programme', 'N/A')}")
         lines.append(f"- Section: {user.get('section', 'N/A')}")
         lines.append(f"- Year: {user.get('studentYear', 'N/A')}")
+        if user.get('profilePicture'):
+            lines.append(f"- Profile Photo: {user['profilePicture']}")
     
     # Active enrollment
     enrollment = get_collection("studenttrackenrollments").find_one(
@@ -339,6 +341,8 @@ def _build_mentor_context(user_id: str) -> str:
         lines.append(f"- Name: {user.get('name', 'Unknown')}")
         lines.append(f"- Email: {user.get('email', 'N/A')}")
         lines.append(f"- Phone: {user.get('mobileNumber', 'N/A')}")
+        if user.get('profilePicture'):
+            lines.append(f"- Profile Photo: {user['profilePicture']}")
     
     # Get active session
     session = get_collection("academicyears").find_one({"isActive": True})
@@ -418,6 +422,8 @@ def _build_admin_context(user_id: str) -> str:
         lines.append(f"- User ID: {user_id}")
         lines.append(f"- Name: {user.get('name', 'Unknown')}")
         lines.append(f"- Email: {user.get('email', 'N/A')}")
+        if user.get('profilePicture'):
+            lines.append(f"- Profile Photo: {user['profilePicture']}")
     
     # Active session
     session = get_collection("academicyears").find_one({"isActive": True})

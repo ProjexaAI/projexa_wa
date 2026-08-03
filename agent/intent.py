@@ -26,6 +26,19 @@ INTENTS = {
             "list_announcements", "list_tracks",
         ],
     },
+    "profile": {
+        "keywords": [
+            "photo", "photos", "picture", "pictures", "image", "images",
+            "profile photo", "profile picture", "profile image",
+            "my photo", "my picture", "my image", "my profile",
+            "avatar", "display picture", "dp",
+        ],
+        "schemas": ["core.md"],
+        "function_docs": ["user-functions.md", "auth-functions.md"],
+        "tools": [
+            "get_user_by_id", "send_media", "get_current_session",
+        ],
+    },
     "user_info": {
         "keywords": [
             "user", "profile", "account", "my info", "my details",
@@ -249,16 +262,20 @@ def _detect_intents_by_llm(message: str, user_role: str, client, model: str) -> 
             temperature=0.0,
             max_tokens=50,
         )
-        raw = response.choices[0].message.content.strip().lower()
+        raw = response.choices[0].message.content
+        if not raw or not raw.strip():
+            logger.warning("[INTENT] LLM returned empty content")
+            return _ALWAYS_RELEVANT.copy()
+        raw = raw.strip().lower()
         intents = set()
         for part in raw.split(","):
             part = part.strip().strip('"').strip("'")
             if part in INTENTS:
                 intents.add(part)
-        return intents if intents else _ALWAYS_RELEVANT
+        return intents if intents else _ALWAYS_RELEVANT.copy()
     except Exception as e:
         logger.warning(f"[INTENT] LLM detection failed: {e}")
-        return _ALWAYS_RELEVANT
+        return _ALWAYS_RELEVANT.copy()
 
 
 # ============================================================

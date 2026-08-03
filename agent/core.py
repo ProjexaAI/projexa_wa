@@ -337,7 +337,8 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             model=OPENCODE_MODEL,
             messages=messages,
             tools=TOOL_DEFINITIONS,
-            tool_choice="auto"
+            tool_choice="auto",
+            reasoning_effort="high"
         )
 
         choice = response.choices[0]

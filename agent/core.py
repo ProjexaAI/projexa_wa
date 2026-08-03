@@ -2,8 +2,12 @@ import json
 import time
 from openai import OpenAI
 from config import OPENCODE_API_KEY, OPENCODE_MODEL, OPENCODE_BASE_URL
-from agent.prompts import build_system_prompt, HUMANIZER_SYSTEM_PROMPT
+from agent.prompts import build_system_prompt, load_filtered_docs, SCHEMA_COLLECTIONS, HUMANIZER_SYSTEM_PROMPT
 from agent.functions import FUNCTIONS, execute_function, get_user_context
+from agent.intent import (
+    detect_intents, get_relevant_schemas, get_relevant_function_docs,
+    get_relevant_tools, is_full_context_needed, INTENTS as INTENT_DEFS
+)
 from agent.query_validator import validate_query, TIMEOUT_SECONDS
 from agent.db import get_collection
 from agent.permissions import get_allowed_collections
@@ -292,6 +296,83 @@ def _save_history(user_id: str, messages: list):
     }
 
 
+def _build_filtered_tool_defs(relevant_tool_names: list[str]) -> list[dict]:
+    """Build OpenAI tool definitions for only the relevant tools."""
+    tools = []
+    for name in relevant_tool_names:
+        if name in TOOL_DEFINITIONS_MAP:
+            tools.append(TOOL_DEFINITIONS_MAP[name])
+    return tools
+
+
+# Pre-build a lookup map for tool definitions
+TOOL_DEFINITIONS_MAP = {}
+for _td in TOOL_DEFINITIONS:
+    TOOL_DEFINITIONS_MAP[_td["function"]["name"]] = _td
+
+
+def _build_filtered_system_prompt(user_id: str, user_name: str, user_role: str,
+                                  allowed_read: list, allowed_write: list,
+                                  user_context: str, intents: set[str]) -> str:
+    """Build system prompt with only intent-relevant docs."""
+    relevant_schemas = get_relevant_schemas(intents)
+    relevant_func_docs = get_relevant_function_docs(intents)
+
+    docs = load_filtered_docs(
+        user_role=user_role,
+        allowed_read=allowed_read,
+        intents=intents,
+        relevant_schemas=relevant_schemas,
+        relevant_function_docs=relevant_func_docs,
+    )
+
+    read_list = "ALL" if allowed_read == "*" else ", ".join(allowed_read)
+    write_list = "ALL" if allowed_write == "*" else ", ".join(allowed_write)
+
+    context_block = f"\n{user_context}\n" if user_context else ""
+
+    prompt = f"""You are an AI assistant for Projexa Internship Management System. You help students, mentors, and admins manage their internship data via WhatsApp.
+
+## User Context
+- User ID: {user_id}
+- Name: {user_name}
+- Role: {user_role}
+- Allowed Read Collections: {read_list}
+- Allowed Write Collections: {write_list}
+{context_block}
+
+## Documentation
+
+{docs}
+
+## Rules
+
+1. **For WRITE operations**: ALWAYS use the predefined functions. Never generate write queries.
+2. **For READ operations**: Use predefined functions if available. If no predefined function exists, you may generate a MongoDB read query.
+3. **NEVER** access collections not in the user's allowed read/write list.
+4. **NEVER** use write operators ($set, $push, $insert, etc.) in custom queries.
+5. Keep responses concise and formatted for WhatsApp (no markdown tables, use simple text).
+6. If the user asks something unrelated to the system, politely redirect them.
+7. When showing data, format it nicely for WhatsApp (bullet points, line breaks).
+8. If a function returns an error, explain it to the user in simple terms.
+9. **When a student asks "who is my mentor?"**, use `get_student_mentor` with their user ID. Do NOT run custom queries against enrollment or assignment collections.
+10. **Avoid large result sets**: When listing teams, always filter by `track_config_id` if the user mentions a specific track. Never dump all teams for a session into context.
+11. **Minimize context bloat**: If a function returns many results, summarize them instead of including the full data in subsequent AI calls.
+12. **When results are empty**: If a function returns 0 results, explain WHY to the user. For example: "There are announcements in the system, but none are currently targeted to your track or role." Never just say "no data found" without context.
+13. **Media support**: When a function returns documents with `files` array OR `attachments` array, each item has a `url` or `fileUrl` field. Use that exact URL value when calling `send_media`. Do NOT construct, modify, or guess URLs — use the URL field as-is. Call `send_media` with `type: "document"` for PDFs/files/spreadsheets. If an announcement has attachments, send them as documents — do NOT just describe them in text.
+14. **Use the User Context above**: The "User Context" section contains the user's current session ID, track config ID, enrollment ID, team info, and mentor info. Use these values directly when calling functions — do NOT ask the user for IDs you already have. For example, to find a student's team, call `list_teams(member_id=user_id)`.
+15. **NEVER hallucinate data**: ONLY use data returned by function calls. If a function returns document titles, use THOSE exact titles. If a function returns scores, use THOSE exact numbers. NEVER make up document names, scores, dates, or any other data. If the function result doesn't contain what the user is asking for, say "I don't have that information" rather than guessing.
+16. **Anticipate intent, not literal words** — When a user asks about something, consider what they're really trying to understand. If they ask "does it have marks?" about documents, they likely mean "is there a marks criteria attached?" not "have marks been scored yet?" Think about what question comes *next* and answer proactively.
+17. **Lead with the answer** — Start your response with the direct answer (yes/no/value/explanation), then elaborate only if needed. Don't bury the answer in paragraphs of context. Default to 1-3 sentences unless the user asks for detail.
+18. **Only discuss what's in their track** — The "User Context" section lists the student's track criteria (attendance, marks, documents, interactions, etc.). If a topic is NOT listed in their context (e.g., no attendance section means their track has no attendance component, no interactions section means no interaction sessions), do NOT discuss it. Don't say "0 attendance records" or "0 interactions" — instead say "Your track doesn't have attendance/interaction tracking." This matches the web app sidebar which hides irrelevant tabs.
+19. **Use the Available Capabilities list** — When asked "what can you do?", ONLY list items from the "Available Capabilities" section in the User Context. Do NOT add capabilities from the function docs that aren't in that list. If a capability isn't listed, it's not available for this user's track.
+20. **ZERO GREETINGS** — Your response must NEVER start with "Hi", "Hey", "Hello", or the user's name. NEVER. Not even once. Not even on the first message. Just answer the question. If they say "hi", just say "What can I help you with?" — no name, no emoji, no greeting. If they ask about documents, start with "I checked your documents" — not "Hey Harshit, I checked your documents". The words "Hey", "Hi", "Hello" should NEVER appear in your response. EVER.
+21. **NO NAME IN RESPONSES** — NEVER use the user's name in your response. Not "Hey Harshit", not "Harshit, I found...", not "Your documents, Harshit". Just say "I found..." or "Your documents...". The user's name is in the system context for YOUR reference only — never output it.
+22. **One message = one answer** — Treat each message as a continuation of the conversation. The user has history. Do NOT re-introduce yourself. Do NOT re-explain what you can do. Just answer what they asked.
+"""
+    return prompt
+
+
 def process_message(user_id: str, user_name: str, user_role: str, message: str) -> dict:
     """
     Process a user message and return a response with optional media.
@@ -308,35 +389,57 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
     allowed_read = allowed["read"]
     allowed_write = allowed["write"]
 
-    # Fetch user's enrollment, team, and mentor context
+    # Step 1: Detect intent from user message
+    intents = detect_intents(message, user_role, client, OPENCODE_MODEL)
+    use_filtered = not is_full_context_needed(intents)
+
+    # Step 2: Fetch user context
     user_ctx = get_user_context(user_id, user_role)
 
-    system_prompt = build_system_prompt(
-        user_id=user_id,
-        user_name=user_name,
-        user_role=user_role,
-        allowed_read=allowed_read,
-        allowed_write=allowed_write,
-        user_context=user_ctx
-    )
+    # Step 3: Build system prompt (filtered or full)
+    if use_filtered:
+        system_prompt = _build_filtered_system_prompt(
+            user_id=user_id,
+            user_name=user_name,
+            user_role=user_role,
+            allowed_read=allowed_read,
+            allowed_write=allowed_write,
+            user_context=user_ctx,
+            intents=intents,
+        )
+        relevant_tools = get_relevant_tools(intents)
+        active_tool_defs = _build_filtered_tool_defs(relevant_tools)
+        logger.info(f"[INTENT] Filtered mode: {len(intents)} intents, {len(relevant_tools)} tools, {len(active_tool_defs)} tool_defs")
+    else:
+        system_prompt = build_system_prompt(
+            user_id=user_id,
+            user_name=user_name,
+            user_role=user_role,
+            allowed_read=allowed_read,
+            allowed_write=allowed_write,
+            user_context=user_ctx,
+        )
+        active_tool_defs = TOOL_DEFINITIONS
+        logger.info(f"[INTENT] Full mode: {len(TOOL_DEFINITIONS)} tools")
 
-    # Load prior conversation history
+    # Step 4: Load conversation history
     history = _load_history(user_id)
 
-    # Build messages: system prompt + history + new user message
+    # Build messages
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     messages.append({"role": "user", "content": message})
 
     # Track media items from send_media tool calls
     pending_media = []
+    collected_intents = set(intents)  # Track all intents encountered during tool calls
 
-    # Function calling loop (max 10 iterations to prevent infinite loops)
-    for _ in range(10):
+    # Function calling loop (max 10 iterations)
+    for iteration in range(10):
         response = client.chat.completions.create(
             model=OPENCODE_MODEL,
             messages=messages,
-            tools=TOOL_DEFINITIONS,
+            tools=active_tool_defs,
             tool_choice="auto",
             reasoning_effort="high"
         )
@@ -349,7 +452,6 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             _save_history(user_id, messages + [
                 {"role": "assistant", "content": final_text}
             ])
-            # Don't return text when media is present — media message is sufficient
             if pending_media:
                 return {"text": "", "media": pending_media}
             final_text = humanize_response(final_text, user_name)
@@ -377,6 +479,13 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
             # Handle custom MongoDB query
             elif func_name == "execute_mongodb_query":
                 result = execute_custom_query(func_args, user_role, allowed_read)
+                # Detect intent from queried collection
+                queried_col = func_args.get("collection", "")
+                for intent_name, intent_cfg in INTENT_DEFS.items():
+                    for schema_file in intent_cfg["schemas"]:
+                        cols = SCHEMA_COLLECTIONS.get(schema_file, [])
+                        if queried_col in cols:
+                            collected_intents.add(intent_name)
             else:
                 # Handle predefined function
                 func_def = FUNCTIONS.get(func_name, {})
@@ -396,6 +505,15 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
 
                 result = execute_function(func_name, converted_args, user_role)
 
+                # Track intent from function's collection
+                if func_def:
+                    func_collection = func_def.get("collection", "")
+                    for intent_name, intent_cfg in INTENT_DEFS.items():
+                        for schema_file in intent_cfg["schemas"]:
+                            cols = SCHEMA_COLLECTIONS.get(schema_file, [])
+                            if func_collection in cols:
+                                collected_intents.add(intent_name)
+
             # Log function result for debugging
             result_str = json.dumps(result, default=str)
             logger.info(f"[FUNC_RESULT] {func_name} | args={func_args} | result={result_str}")
@@ -405,6 +523,19 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
                 "tool_call_id": tool_call.id,
                 "content": result_str
             })
+
+        # Dynamic tool expansion: if new intents emerged from tool results,
+        # add their tools to the active set for the next iteration
+        if use_filtered and collected_intents - intents:
+            new_intents = collected_intents - intents
+            intents = collected_intents
+            new_tools = get_relevant_tools(new_intents)
+            # Add new tools that aren't already in active_tool_defs
+            existing_names = {t["function"]["name"] for t in active_tool_defs}
+            for tool_name in new_tools:
+                if tool_name not in existing_names and tool_name in TOOL_DEFINITIONS_MAP:
+                    active_tool_defs.append(TOOL_DEFINITIONS_MAP[tool_name])
+                    logger.info(f"[INTENT] Expanded tools: added {tool_name}")
 
     # If we've exceeded iterations, save what we have and return
     final_text = "I processed your request but needed more steps. Please try a simpler query."

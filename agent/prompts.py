@@ -66,6 +66,58 @@ def _strip_enums(content: str, user_role: str) -> str:
     return content.strip()
 
 
+def load_filtered_docs(user_role: str, allowed_read: list, intents: set[str],
+                       relevant_schemas: list[str], relevant_function_docs: list[str]) -> str:
+    """
+    Load only docs relevant to detected intents + role permissions.
+    Much smaller than load_docs() — used for dynamic tool loading.
+    """
+    docs_dir = os.path.join(os.path.dirname(__file__), "..", "docs")
+    content = []
+
+    # Load ONLY relevant schema files (filtered by intent AND allowed_read)
+    schema_dir = os.path.join(docs_dir, "schema")
+    if os.path.exists(schema_dir):
+        for f in relevant_schemas:
+            if not f.endswith(".md"):
+                continue
+            if allowed_read and allowed_read != "*":
+                collections = SCHEMA_COLLECTIONS.get(f, [])
+                if not any(c in allowed_read for c in collections):
+                    continue
+            filepath = os.path.join(schema_dir, f)
+            if os.path.exists(filepath):
+                with open(filepath) as fh:
+                    content.append(fh.read())
+
+    # Load ONLY relevant function doc files (filtered by intent AND role)
+    functions_dir = os.path.join(docs_dir, "functions")
+    if os.path.exists(functions_dir):
+        for f in relevant_function_docs:
+            if not f.endswith(".md"):
+                continue
+            if user_role:
+                applicable_roles = FUNCTION_DOC_ROLES.get(f, ["ADMIN", "MENTOR", "STUDENT"])
+                if user_role not in applicable_roles:
+                    continue
+            filepath = os.path.join(functions_dir, f)
+            if os.path.exists(filepath):
+                with open(filepath) as fh:
+                    raw = fh.read()
+                    content.append(_strip_api_routes(raw))
+
+    # Load enums (with irrelevant sections stripped for non-admins)
+    enums_path = os.path.join(docs_dir, "enums.md")
+    if os.path.exists(enums_path):
+        with open(enums_path) as fh:
+            enums_text = fh.read()
+        if user_role and user_role != "ADMIN":
+            enums_text = _strip_enums(enums_text, user_role)
+        content.append(enums_text)
+
+    return "\n\n---\n\n".join(content)
+
+
 def load_docs(user_role: str = None, allowed_read: list = None) -> str:
     docs_dir = os.path.join(os.path.dirname(__file__), "..", "docs")
     content = []

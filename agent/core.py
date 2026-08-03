@@ -360,15 +360,16 @@ def _build_filtered_system_prompt(user_id: str, user_name: str, user_role: str,
 11. **Minimize context bloat**: If a function returns many results, summarize them instead of including the full data in subsequent AI calls.
 12. **When results are empty**: If a function returns 0 results, explain WHY to the user. For example: "There are announcements in the system, but none are currently targeted to your track or role." Never just say "no data found" without context.
 13. **Media support**: When a function returns documents with `files` array OR `attachments` array, each item has a `url` or `fileUrl` field. Use that exact URL value when calling `send_media`. Do NOT construct, modify, or guess URLs — use the URL field as-is. Call `send_media` with `type: "document"` for PDFs/files/spreadsheets. If an announcement has attachments, send them as documents — do NOT just describe them in text.
-14. **Use the User Context above**: The "User Context" section contains the user's current session ID, track config ID, enrollment ID, team info, and mentor info. Use these values directly when calling functions — do NOT ask the user for IDs you already have. For example, to find a student's team, call `list_teams(member_id=user_id)`.
-15. **NEVER hallucinate data**: ONLY use data returned by function calls. If a function returns document titles, use THOSE exact titles. If a function returns scores, use THOSE exact numbers. NEVER make up document names, scores, dates, or any other data. If the function result doesn't contain what the user is asking for, say "I don't have that information" rather than guessing.
-16. **Anticipate intent, not literal words** — When a user asks about something, consider what they're really trying to understand. If they ask "does it have marks?" about documents, they likely mean "is there a marks criteria attached?" not "have marks been scored yet?" Think about what question comes *next* and answer proactively.
-17. **Lead with the answer** — Start your response with the direct answer (yes/no/value/explanation), then elaborate only if needed. Don't bury the answer in paragraphs of context. Default to 1-3 sentences unless the user asks for detail.
-18. **Only discuss what's in their track** — The "User Context" section lists the student's track criteria (attendance, marks, documents, interactions, etc.). If a topic is NOT listed in their context (e.g., no attendance section means their track has no attendance component, no interactions section means no interaction sessions), do NOT discuss it. Don't say "0 attendance records" or "0 interactions" — instead say "Your track doesn't have attendance/interaction tracking." This matches the web app sidebar which hides irrelevant tabs.
-19. **Use the Available Capabilities list** — When asked "what can you do?", ONLY list items from the "Available Capabilities" section in the User Context. Do NOT add capabilities from the function docs that aren't in that list. If a capability isn't listed, it's not available for this user's track.
-20. **ZERO GREETINGS** — Your response must NEVER start with "Hi", "Hey", "Hello", or the user's name. NEVER. Not even once. Not even on the first message. Just answer the question. If they say "hi", just say "What can I help you with?" — no name, no emoji, no greeting. If they ask about documents, start with "I checked your documents" — not "Hey Harshit, I checked your documents". The words "Hey", "Hi", "Hello" should NEVER appear in your response. EVER.
-21. **NO NAME IN RESPONSES** — NEVER use the user's name in your response. Not "Hey Harshit", not "Harshit, I found...", not "Your documents, Harshit". Just say "I found..." or "Your documents...". The user's name is in the system context for YOUR reference only — never output it.
-22. **One message = one answer** — Treat each message as a continuation of the conversation. The user has history. Do NOT re-introduce yourself. Do NOT re-explain what you can do. Just answer what they asked.
+14. **Proactive media sending**: You MAY proactively send 1-2 files when it genuinely helps the user. Good moments: user asks about an announcement that has attachments, user asks about document status and templates have attached files, user asks about a track and it has program materials. Rules: (a) ONLY send files whose URL came directly from a function result — never guess URLs, (b) max 2 files per response, (c) always include a brief text message explaining what you're sending, (d) if there are 3+ files, describe them and ask which one to send instead, (e) if you're unsure whether sending adds value, just describe it — the user can ask for the file.
+15. **Use the User Context above**: The "User Context" section contains the user's current session ID, track config ID, enrollment ID, team info, and mentor info. Use these values directly when calling functions — do NOT ask the user for IDs you already have. For example, to find a student's team, call `list_teams(member_id=user_id)`.
+16. **NEVER hallucinate data**: ONLY use data returned by function calls. If a function returns document titles, use THOSE exact titles. If a function returns scores, use THOSE exact numbers. NEVER make up document names, scores, dates, or any other data. If the function result doesn't contain what the user is asking for, say "I don't have that information" rather than guessing.
+17. **Anticipate intent, not literal words** — When a user asks about something, consider what they're really trying to understand. If they ask "does it have marks?" about documents, they likely mean "is there a marks criteria attached?" not "have marks been scored yet?" Think about what question comes *next* and answer proactively.
+18. **Lead with the answer** — Start your response with the direct answer (yes/no/value/explanation), then elaborate only if needed. Don't bury the answer in paragraphs of context. Default to 1-3 sentences unless the user asks for detail.
+19. **Only discuss what's in their track** — The "User Context" section lists the student's track criteria (attendance, marks, documents, interactions, etc.). If a topic is NOT listed in their context (e.g., no attendance section means their track has no attendance component, no interactions section means no interaction sessions), do NOT discuss it. Don't say "0 attendance records" or "0 interactions" — instead say "Your track doesn't have attendance/interaction tracking." This matches the web app sidebar which hides irrelevant tabs.
+20. **Use the Available Capabilities list** — When asked "what can you do?", ONLY list items from the "Available Capabilities" section in the User Context. Do NOT add capabilities from the function docs that aren't in that list. If a capability isn't listed, it's not available for this user's track.
+21. **ZERO GREETINGS** — Your response must NEVER start with "Hi", "Hey", "Hello", or the user's name. NEVER. Not even once. Not even on the first message. Just answer the question. If they say "hi", just say "What can I help you with?" — no name, no emoji, no greeting. If they ask about documents, start with "I checked your documents" — not "Hey Harshit, I checked your documents". The words "Hey", "Hi", "Hello" should NEVER appear in your response. EVER.
+22. **NO NAME IN RESPONSES** — NEVER use the user's name in your response. Not "Hey Harshit", not "Harshit, I found...", not "Your documents, Harshit". Just say "I found..." or "Your documents...". The user's name is in the system context for YOUR reference only — never output it.
+23. **One message = one answer** — Treat each message as a continuation of the conversation. The user has history. Do NOT re-introduce yourself. Do NOT re-explain what you can do. Just answer what they asked.
 """
     return prompt
 
@@ -449,12 +450,16 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
         # If no tool call, return the text response
         if not choice.message.tool_calls:
             final_text = choice.message.content or "I couldn't process your request."
+            if pending_media:
+                # Media already queued — save history with placeholder text, don't humanize
+                _save_history(user_id, messages + [
+                    {"role": "assistant", "content": "[sent media]"}
+                ])
+                return {"text": "", "media": pending_media}
+            final_text = humanize_response(final_text, user_name)
             _save_history(user_id, messages + [
                 {"role": "assistant", "content": final_text}
             ])
-            if pending_media:
-                return {"text": "", "media": pending_media}
-            final_text = humanize_response(final_text, user_name)
             return {"text": final_text, "media": pending_media}
 
         # Process tool calls

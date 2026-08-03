@@ -850,15 +850,16 @@ def get_attendance_stats(enrollment_id: str = None, student_id: str = None) -> d
 # ============================================================
 
 def get_score_ledger(enrollment_id: str) -> list:
-    """Get score ledger for enrollment, filtered to only include entries matching active components.
+    """Get score ledger for an enrollment, filtered to active components (including parent track).
 
-    Resolves parent track components to match website behavior.
+    Old entries from changed criteria are automatically filtered out.
+    Returns empty list if enrollment's current track has no matching components.
     """
     enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(enrollment_id)})
     if not enrollment:
         return []
 
-    # Resolve active components including parent track (matching website behavior)
+    # Resolve active components including parent track
     active_comp_ids = set()
     for c in _resolve_assessment_components(enrollment.get("trackSessionConfigId")):
         if c.get("isActive"):
@@ -2019,7 +2020,7 @@ FUNCTIONS = {
         "collection": "studentattendances"
     },
     "get_score_ledger": {
-        "description": "Get score records for an enrollment",
+        "description": "Get score records for an enrollment, filtered to active components (including parent track). Old entries from changed criteria are ignored.",
         "params": {"enrollment_id": "string"},
         "handler": get_score_ledger,
         "permission": "read",

@@ -17,9 +17,14 @@ Score recording, score queries, mentor evaluations. Use when query involves scor
 
 | Function | Description | Params | Returns | Write? |
 |----------|-------------|--------|---------|--------|
-| `get_score_ledger` | Get scores for enrollment | `enrollmentId: string` | `ScoreLedger[]` | No |
+| `get_score_ledger` | Get score records for an enrollment (filtered to active components including parent track) | `enrollmentId: string` | `ScoreLedger[]` | No |
+| `get_student_score_summary` | Current track score summary (matches website, filtered to active components) | `studentId: string, enrollmentId?: string` | `{ total, byComponent }` | No |
 | `list_students_with_marks` | Paginated students with marks | `filters: { trackConfigId?, programme?, section?, search?, page?, pageSize? }` | `{ items, total }` | No |
 | `get_marks_hierarchy` | Get marks hierarchy with years, programmes, sections, tracks | `-` | `{ session, years, parentTracks, tracks }` | No |
+
+### Score Query Behavior
+
+Both `get_score_ledger` and `get_student_score_summary` filter entries to only include those matching **active components** from the enrollment's current track config (including parent track components). Old entries from changed criteria are automatically excluded.
 
 ## Mentor Evaluation
 

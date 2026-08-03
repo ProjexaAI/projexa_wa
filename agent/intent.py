@@ -391,28 +391,31 @@ def _detect_intents_by_keywords(message: str) -> set[str]:
 # LLM-BASED INTENT DETECTION (FALLBACK)
 # ============================================================
 
-_INTENT_DETECT_PROMPT = """Classify this WhatsApp message into one or more intent categories.
+_INTENT_DETECT_PROMPT = """You are an intent classifier for a WhatsApp chatbot. Classify the user's message.
 
 INTENTS:
-- user_info: Getting/updating user profile, looking up users by name/email/phone/roll number, listing users
-- tracks: Track listing, details, configs
-- enrollment: Enrollment status, listing, updates
-- attendance: Attendance marking, stats, records
-- evaluation: Scores, marks, evaluations
-- mentor: Mentor assignments, interactions, progress
-- teams: Team creation, joining, invitations
-- announcements: Announcements, notifications
-- onboarding: Document submissions, intake forms
-- session: Academic year/session info
-
-MESSAGE: {message}
+- user_info: Looking up any user by name, email, phone, roll number, or any identifier. Also includes "who is X", "tell me about X", "info on X", "find X", "search X", profile queries, listing users.
+- tracks: Track listing, course details, programme info, track configs.
+- enrollment: Enrollment status, enrollment listing, enrollment updates.
+- attendance: Attendance marking, stats, records, present/absent.
+- evaluation: Scores, marks, grades, evaluations, score ledger.
+- mentor: Mentor assignments, mentor interactions, student progress, meetings.
+- teams: Team creation, joining, invitations, team members.
+- announcements: Announcements, notices, notifications, broadcasts.
+- onboarding: Document submissions, intake forms, document status, uploads.
+- session: Academic year, current session, active session.
+- general: Greetings, help requests, capabilities, casual chat, off-topic.
 
 RULES:
-- A bare name (e.g. "rahul", "john") is likely user_info
-- A bare email is likely user_info
-- A bare phone number is likely user_info
-- A bare roll number is likely user_info
+- A bare name like "rahul" or "john" → user_info
+- A bare email → user_info
+- A bare phone number → user_info
+- A roll number → user_info
+- "what about X" or "who is X" → user_info
+- Greetings like "hello", "hi", "hey" → general
+- "help", "what can you do" → general
 
+MESSAGE: {message}
 ROLE: {role}
 
 Return ONLY a comma-separated list of intent names. Example: "attendance,evaluation"
@@ -425,17 +428,15 @@ def _detect_intents_by_llm(message: str, user_role: str, client, model: str) -> 
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "You are an intent classifier. Return only comma-separated intent names."},
+                {"role": "system", "content": "You are an intent classifier. You MUST return only comma-separated intent names. No explanations. No reasoning. Just the intent names."},
                 {"role": "user", "content": _INTENT_DETECT_PROMPT.format(message=message, role=user_role)},
             ],
             temperature=0.0,
-            max_tokens=50,
+            max_tokens=20,
         )
         choice = response.choices[0]
         raw = choice.message.content
         if not raw or not raw.strip():
-            # Some models put reasoning in reasoning_content and leave content empty
-            # Fall back to general intent
             logger.warning(f"[INTENT] LLM returned empty content (finish_reason={choice.finish_reason})")
             return {"general"}
         raw = raw.strip().lower()
@@ -460,48 +461,31 @@ def detect_intents(message: str, user_role: str = None, client=None, model: str 
     Detect user intents from a message.
     
     Detection priority:
-    1. Domain keyword matching (fast, free)
-    2. Follow-up pattern + history carryover
-    3. LLM fallback (when available)
-    4. General intent
+    1. Follow-up pattern matching (fast, free)
+    2. Domain keyword matching (fast, free) for obvious queries
+    3. LLM fallback for everything else (names, ambiguous queries, etc.)
     
     Always includes 'session' intent for context.
     """
-    # Step 1: Try domain keyword matching
+    # Step 1: Check if this is a follow-up reference (before keyword matching)
+    if _is_followup(message):
+        carried = _carry_intent_from_history(history)
+        if carried:
+            carried.add("session")
+            logger.info(f"[INTENT] Follow-up with history context: {carried}")
+            return carried
+        followup_intents = {"followup", "session"}
+        logger.info(f"[INTENT] Follow-up without history context: using followup superset")
+        return followup_intents
+
+    # Step 2: Try domain keyword matching
     intents = _detect_intents_by_keywords(message)
     if intents:
         intents.add("session")
         logger.info(f"[INTENT] Keywords detected: {intents}")
         return intents
 
-    # Step 2: Check if this is a follow-up reference
-    if _is_followup(message):
-        # Try to carry intent from conversation history
-        carried = _carry_intent_from_history(history)
-        if carried:
-            carried.add("session")
-            logger.info(f"[INTENT] Follow-up with history context: {carried}")
-            return carried
-        # No history context — use follow-up superset
-        followup_intents = {"followup", "session"}
-        logger.info(f"[INTENT] Follow-up without history context: using followup superset")
-        return followup_intents
-
-    # Step 3: Check fallback keywords (greetings, help)
-    msg_lower = message.lower().strip()
-    for category in ["greeting", "help"]:
-        keywords = {
-            "greeting": ["hello", "hi", "hey", "good morning", "good evening",
-                         "how are you", "what's up", "sup", "yo"],
-            "help": ["help", "what can you do", "what do you do", "capabilities",
-                     "features", "options", "menu"],
-        }.get(category, [])
-        for kw in keywords:
-            if kw in msg_lower:
-                logger.info(f"[INTENT] Fallback matched: {category}")
-                return {"session", "general"}
-
-    # Step 4: LLM fallback
+    # Step 3: LLM fallback (handles names, ambiguous queries, greetings, etc.)
     if client and model:
         logger.info("[INTENT] No keywords matched, using LLM fallback")
         intents = _detect_intents_by_llm(message, user_role, client, model)
@@ -509,7 +493,7 @@ def detect_intents(message: str, user_role: str = None, client=None, model: str 
         logger.info(f"[INTENT] LLM detected: {intents}")
         return intents
 
-    # Step 5: Minimal context
+    # Step 4: Minimal context
     logger.info("[INTENT] No match, using minimal context")
     return _ALWAYS_RELEVANT.copy()
 

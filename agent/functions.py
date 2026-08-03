@@ -82,6 +82,102 @@ def _get_highest_role(roles: list[str] | None) -> str:
         return "STUDENT"
     return max(roles, key=lambda r: _ROLE_PRIORITY.get(r, 0))
 
+
+# Enrollment status priority: ACTIVE > ENROLLED > PENDING_ONBOARDING > INACTIVE
+_ENROLLMENT_STATUS_PRIORITY = {
+    "ACTIVE": 4,
+    "ENROLLED": 3,
+    "PENDING_ONBOARDING": 2,
+    "INACTIVE": 1,
+}
+
+
+def _get_active_session():
+    """Get the active academic session. Returns None if not found."""
+    return get_collection("academicyears").find_one({"isActive": True})
+
+
+def _get_current_enrollment(student_id: str):
+    """Get the correct current enrollment for a student in the active session.
+
+    Matches the website logic:
+    1. Filter by active session
+    2. Sort by startedAt desc
+    3. Pick first enrollment with an active status (by priority)
+    """
+    active_session = _get_active_session()
+    if not active_session:
+        return None, None
+
+    enrollments = list(get_collection("studenttrackenrollments").find(
+        {"studentId": ObjectId(student_id), "sessionId": active_session["_id"]}
+    ).sort("startedAt", -1))
+
+    if not enrollments:
+        return None, active_session
+
+    # Pick first enrollment with an active status (highest priority wins)
+    current = None
+    for e in enrollments:
+        status = e.get("status", "")
+        if status in _ENROLLMENT_STATUS_PRIORITY:
+            if current is None or _ENROLLMENT_STATUS_PRIORITY.get(status, 0) > _ENROLLMENT_STATUS_PRIORITY.get(current.get("status", ""), 0):
+                current = e
+
+    # Fallback to most recent enrollment
+    if current is None:
+        current = enrollments[0]
+
+    return current, active_session
+
+
+def _collect_enrollment_lineage(enrollment_id: str) -> list:
+    """Walk the switchedFromEnrollmentId chain to collect all enrollments in the lineage."""
+    lineage = []
+    visited = set()
+    current_id = enrollment_id
+
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(current_id)})
+        if not enrollment:
+            break
+        lineage.append(enrollment)
+        switched_from = enrollment.get("switchedFromEnrollmentId")
+        current_id = str(switched_from) if switched_from else None
+
+    return lineage
+
+
+def _resolve_assessment_components(track_session_config_id) -> list:
+    """Resolve effective assessment components for a track config, including parent track components.
+
+    Matches website behavior: if the track has a parentTrackId, merge parent components first.
+    """
+    config = get_collection("tracksessionconfigs").find_one(
+        {"_id": track_session_config_id},
+        {"sessionId": 1, "trackId": 1, "assessmentComponents": 1}
+    )
+    if not config:
+        return []
+
+    track = get_collection("tracks").find_one(
+        {"_id": config.get("trackId")},
+        {"parentTrackId": 1}
+    )
+    if not track or not track.get("parentTrackId"):
+        return config.get("assessmentComponents") or []
+
+    # Has parent — merge parent components first, then child
+    parent_config = get_collection("tracksessionconfigs").find_one(
+        {"sessionId": config["sessionId"], "trackId": track["parentTrackId"]},
+        {"assessmentComponents": 1}
+    )
+    parent_components = (parent_config.get("assessmentComponents") or []) if parent_config else []
+    child_components = config.get("assessmentComponents") or []
+    return parent_components + child_components
+
+
 def get_user_context(user_id: str, role: str = None) -> str:
     """Build role-specific context string with pre-fetched user data."""
     if not role:
@@ -123,11 +219,8 @@ def _build_student_context(user_id: str) -> str:
         if user.get('profilePicture'):
             lines.append(f"- Profile Photo: {user['profilePicture']}")
     
-    # Active enrollment
-    enrollment = get_collection("studenttrackenrollments").find_one(
-        {"studentId": ObjectId(user_id), "status": {"$in": ["ACTIVE", "ENROLLED", "PENDING_ONBOARDING"]}},
-        sort=[("startedAt", -1)]
-    )
+    # Active enrollment — session-aware, status-priority based
+    enrollment, active_session = _get_current_enrollment(user_id)
     
     if enrollment:
         lines.append("\n## Your Enrollment")
@@ -178,18 +271,26 @@ def _build_student_context(user_id: str) -> str:
             "enrollmentId": enrollment["_id"],
         }))
 
-        # Track criteria
-        # Only show components from the enrollment's own track config
+        # Track criteria — collect from enrollment lineage (current + previous tracks via switches)
+        lineage = _collect_enrollment_lineage(str(enrollment["_id"]))
+        lineage_enrollment_ids = {str(e["_id"]) for e in lineage}
+
+        # Gather active assessment components from ALL enrollments in the lineage
+        # (including parent track components, matching website behavior)
         active_components = []
-        if track:
-            active_components = [c for c in (track.get("assessmentComponents") or []) if c.get("isActive")]
+        active_comp_ids = set()
+        for line_enr in lineage:
+            for c in _resolve_assessment_components(line_enr.get("trackSessionConfigId")):
+                if c.get("isActive") and str(c["_id"]) not in active_comp_ids:
+                    active_components.append(c)
+                    active_comp_ids.add(str(c["_id"]))
         
         if active_components:
             track_name = track.get("name") or "Track"
             lines.append(f"\n## Your Track Criteria ({track_name})")
-            ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": enrollment["_id"]}))
+            # Fetch ledger entries from ALL enrollments in the lineage
+            ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": {"$in": [e["_id"] for e in lineage]}}))
             # Only count ledger entries that match active component IDs
-            active_comp_ids = {str(c["_id"]) for c in active_components}
             matched_ledger = [l for l in ledger if str(l.get("assessmentComponentId", "")) in active_comp_ids]
             for comp in active_components:
                 comp_type = comp.get("type")
@@ -1594,24 +1695,37 @@ def get_student_interactions_detail(student_id: str, enrollment_id: str = None) 
 
 
 def get_student_score_summary(student_id: str, enrollment_id: str = None) -> dict:
-    """Get score summary for a student, filtered to only include entries matching active components."""
-    query = {"studentId": ObjectId(student_id)}
-    if enrollment_id:
-        query["enrollmentId"] = ObjectId(enrollment_id)
-    ledger = list(get_collection("enrollmentscoreledgers").find(query))
+    """Get score summary for a student, filtered to only include entries matching active components.
 
-    # Only use components from the enrollment's own track config
+    When no enrollment_id is provided, resolves the current enrollment via the active session
+    and walks the switch lineage to collect scores from previous tracks (matching website behavior).
+    """
+    # Resolve the enrollment to use
+    if enrollment_id:
+        enrollment = get_collection("studenttrackenrollments").find_one({"_id": ObjectId(enrollment_id)})
+    else:
+        enrollment, _ = _get_current_enrollment(student_id)
+
+    if not enrollment:
+        return {
+            "total": {"marksAwarded": 0, "maxMarks": 0, "percentage": 0},
+            "byComponent": {}
+        }
+
+    # Walk the enrollment lineage (current + previous tracks via switches)
+    lineage = _collect_enrollment_lineage(str(enrollment["_id"]))
+    lineage_enrollment_ids = [e["_id"] for e in lineage]
+
+    # Gather active assessment components from ALL enrollments in the lineage
+    # (including parent track components, matching website behavior)
     active_comp_ids = set()
-    enrollments = list(get_collection("studenttrackenrollments").find({"studentId": ObjectId(student_id), "status": "ACTIVE"}))
-    if enrollment_id:
-        enrollments = [e for e in enrollments if str(e["_id"]) == enrollment_id]
+    for line_enr in lineage:
+        for c in _resolve_assessment_components(line_enr.get("trackSessionConfigId")):
+            if c.get("isActive"):
+                active_comp_ids.add(str(c["_id"]))
 
-    for enrollment in enrollments:
-        track = get_collection("tracksessionconfigs").find_one({"_id": enrollment.get("trackSessionConfigId")})
-        if track:
-            for c in (track.get("assessmentComponents") or []):
-                if c.get("isActive"):
-                    active_comp_ids.add(str(c["_id"]))
+    # Fetch ledger entries from ALL enrollments in the lineage
+    ledger = list(get_collection("enrollmentscoreledgers").find({"enrollmentId": {"$in": lineage_enrollment_ids}}))
 
     # Filter ledger to only include entries matching active components
     if active_comp_ids:

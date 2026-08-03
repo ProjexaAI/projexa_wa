@@ -4,6 +4,12 @@ Intent detection for dynamic context loading.
 Classifies user messages into intent categories to determine which
 schemas, function docs, and tools to include in the AI prompt.
 This reduces context bloat by ~60%.
+
+Detection priority:
+1. Domain keyword matching (fast, free)
+2. Follow-up pattern detection + history carryover
+3. LLM fallback (when available)
+4. General intent (greetings, help, unknown)
 """
 
 import re
@@ -18,7 +24,7 @@ logger = logging.getLogger("webhook")
 
 INTENTS = {
     "general": {
-        "keywords": [],  # Only triggered by fallback (greetings, help)
+        "keywords": [],
         "schemas": ["core.md"],
         "function_docs": ["auth-functions.md"],
         "tools": [
@@ -45,6 +51,10 @@ INTENTS = {
             "who am i", "my name", "my email", "my role",
             "list users", "all users", "find user", "search user",
             "update user", "edit user", "change user",
+            "info on", "info about", "details on", "details about",
+            "tell me about", "who is", "who's", "what do you know about",
+            "give me info", "give me details", "get user",
+            "find", "search", "lookup", "look up",
         ],
         "schemas": ["core.md"],
         "function_docs": ["user-functions.md", "auth-functions.md"],
@@ -179,19 +189,166 @@ INTENTS = {
             "get_current_session", "list_academic_years",
         ],
     },
+    # Follow-up intent: loaded when message is a follow-up reference
+    # Contains a superset of tools for common follow-up actions
+    "followup": {
+        "keywords": [],
+        "schemas": [
+            "core.md", "attendance.md", "evaluation.md", "mentor.md",
+            "teams.md", "notifications.md", "onboarding.md",
+        ],
+        "function_docs": [
+            "auth-functions.md", "announcement-functions.md",
+            "attendance-functions.md", "enrollment-functions.md",
+            "evaluation-functions.md", "mentor-functions.md",
+            "onboarding-functions.md", "team-functions.md",
+            "track-functions.md", "user-functions.md",
+        ],
+        "tools": [
+            # Announcements (common follow-up target)
+            "list_announcements", "get_announcement",
+            "get_announcement_attachments", "mark_announcement_read",
+            # Enrollment
+            "get_enrollment", "get_student_enrollments",
+            # Attendance
+            "get_student_attendance", "get_attendance_stats",
+            "get_student_attendance_detail",
+            # Evaluation
+            "get_score_ledger", "get_student_score_summary",
+            "get_marks_hierarchy",
+            # Mentor
+            "get_student_mentor", "list_interactions",
+            "get_interaction", "get_student_interactions_detail",
+            # Onboarding
+            "get_onboarding_status", "get_submissions",
+            "get_student_documents", "get_student_document_summary",
+            # Teams
+            "list_teams", "get_team",
+            # User
+            "get_user_by_id",
+            # Session
+            "get_current_session",
+            # Always available
+            "execute_mongodb_query", "send_media",
+        ],
+    },
 }
 
-# Intents that are always relevant (for greetings, help, general queries)
-_ALWAYS_RELEVANT = {"session", "general"}
+# Intents that are always included
+_ALWAYS_RELEVANT = {"session"}
 
-# Fallback keywords for when primary keyword matching finds nothing
-# These help classify vague/greeting messages without needing an LLM call
-_FALLBACK_KEYWORDS = {
-    "greeting": ["hello", "hi", "hey", "good morning", "good evening",
-                 "how are you", "what's up", "sup", "yo"],
-    "help": ["help", "what can you do", "what do you do", "capabilities",
-             "features", "options", "menu"],
-}
+
+# ============================================================
+# FOLLOW-UP PATTERN DETECTION
+# ============================================================
+
+# Patterns that indicate a follow-up reference (not a new topic)
+_FOLLOWUP_PATTERNS = [
+    # Numbered references: "1st", "2nd", "#1", "#2"
+    r'^\d{1,2}(?:st|nd|rd|th)$',
+    r'^#\d{1,2}$',
+    # Ordinal words: "first", "second", "third"
+    r'^(?:first|second|third|fourth|fifth|last|latest|previous)$',
+    # Number words: "one", "two", "three"
+    r'^(?:one|two|three|four|five|both|all|none|neither)$',
+    # Pronoun + reference patterns
+    r'^(?:the\s+)?(?:that|this|it|them|those)\s*(?:one|time|thing)?$',
+    r'^(?:send|show|open|download|share|get)\s+(?:it|them|that|this|the\s+file)',
+    # Confirmation/denial (very short, no domain keywords)
+    r'^(?:yes|no|yeah|nope|yep|nah|ok|okay|sure|please|thanks|thank you|do it|go ahead|skip|cancel|confirm|done)$',
+    # Partial reference: "the attendance one", "the mentor one"
+    r'^the\s+\w+\s+one$',
+    # Action phrases
+    r'^(?:mark|send|show|get|fetch|find|look)\s+(?:it|me|them|that|this)',
+]
+
+_COMPILED_FOLLOWUP_PATTERNS = [re.compile(p, re.IGNORECASE) for p in _FOLLOWUP_PATTERNS]
+
+# Words that indicate a NEW topic (not a follow-up)
+_NEW_TOPIC_INDICATORS = [
+    "show", "list", "get", "find", "search", "create", "add", "update",
+    "delete", "remove", "mark", "assign", "release", "submit", "join",
+    "what", "how", "when", "where", "who", "why", "can you", "could you",
+    "i want", "i need", "help me", "tell me",
+]
+
+
+def _is_followup(message: str) -> bool:
+    """
+    Detect if a message is a follow-up reference rather than a new topic.
+    
+    Only matches explicit follow-up patterns: numbered references,
+    pronouns, confirmations. Everything else goes to LLM fallback.
+    """
+    msg = message.strip()
+    msg_lower = msg.lower()
+
+    # FIRST: Check if message contains any domain keywords
+    # If it has domain keywords, it's NOT a follow-up
+    domain_keywords = [
+        "attendance", "score", "marks", "evaluation", "mentor", "interaction",
+        "team", "enrollment", "document", "submission", "announcement",
+        "track", "course", "programme", "session", "user", "profile",
+        "photo", "picture", "image", "avatar",
+    ]
+    for kw in domain_keywords:
+        if kw in msg_lower:
+            return False
+
+    # SECOND: Only match explicit follow-up patterns
+    for pattern in _COMPILED_FOLLOWUP_PATTERNS:
+        if pattern.match(msg_lower):
+            return True
+
+    return False
+
+
+# ============================================================
+# HISTORY-ASSISTED INTENT DETECTION
+# ============================================================
+
+def _carry_intent_from_history(history: list[dict]) -> set[str] | None:
+    """
+    Check the last assistant response in history to determine what the
+    user is referring to with follow-up references.
+    
+    Returns the relevant intent set if context is found, None otherwise.
+    """
+    if not history:
+        return None
+
+    # Get the last assistant message
+    last_assistant = None
+    for msg in reversed(history):
+        role = msg.get("role", "") if isinstance(msg, dict) else getattr(msg, "role", "")
+        if role == "assistant":
+            content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+            if content:
+                last_assistant = content.lower()
+            break
+
+    if not last_assistant:
+        return None
+
+    # Map keywords in the last response to intents
+    intent_signals = {
+        "announcements": ["announcement", "announcements", "notice", "broadcast"],
+        "attendance": ["attendance", "present", "absent"],
+        "evaluation": ["score", "marks", "evaluation", "grading"],
+        "mentor": ["mentor", "interaction", "meeting"],
+        "teams": ["team", "invite", "member"],
+        "enrollment": ["enrollment", "enrolled", "track"],
+        "onboarding": ["document", "submission", "onboarding"],
+        "tracks": ["track", "course", "programme"],
+    }
+
+    for intent, keywords in intent_signals.items():
+        for kw in keywords:
+            if kw in last_assistant:
+                logger.info(f"[INTENT] History context: '{kw}' found -> {intent}")
+                return {intent}
+
+    return None
 
 
 # ============================================================
@@ -199,24 +356,30 @@ _FALLBACK_KEYWORDS = {
 # ============================================================
 
 def _detect_intents_by_keywords(message: str) -> set[str]:
-    """Detect intents from user message using keyword matching.
-    
-    Uses word boundary matching for short keywords (<=5 chars) to avoid
-    false positives (e.g., 'hello' matching inside 'enrollment').
-    Uses substring matching for longer keywords.
-    """
+    """Detect intents from user message using keyword matching."""
     msg_lower = message.lower().strip()
     detected = set()
 
+    # Bare identifier patterns → user_info (no context words needed)
+    # Phone number: 10 digits (with or without country code)
+    if re.search(r'(?:\+?91)?[\s-]?\d{10}\b', message):
+        detected.add("user_info")
+    # Email address
+    if re.search(r'\b[\w.+-]+@[\w-]+\.[\w.]+\b', message):
+        detected.add("user_info")
+    # Roll number: "roll" or "rollno" or "roll no" followed by digits
+    if re.search(r'\broll\s*(?:no\.?|number)?\s*\d+\b', msg_lower):
+        detected.add("user_info")
+
     for intent, config in INTENTS.items():
+        if intent == "followup":
+            continue  # Skip followup in keyword matching
         for keyword in config["keywords"]:
             if len(keyword) <= 5:
-                # Short keyword: use word boundary matching
                 if re.search(r'\b' + re.escape(keyword) + r'\b', msg_lower):
                     detected.add(intent)
                     break
             else:
-                # Long keyword: substring matching is fine
                 if keyword in msg_lower:
                     detected.add(intent)
                     break
@@ -231,7 +394,7 @@ def _detect_intents_by_keywords(message: str) -> set[str]:
 _INTENT_DETECT_PROMPT = """Classify this WhatsApp message into one or more intent categories.
 
 INTENTS:
-- user_info: Getting/updating user profile, listing users
+- user_info: Getting/updating user profile, looking up users by name/email/phone/roll number, listing users
 - tracks: Track listing, details, configs
 - enrollment: Enrollment status, listing, updates
 - attendance: Attendance marking, stats, records
@@ -243,6 +406,12 @@ INTENTS:
 - session: Academic year/session info
 
 MESSAGE: {message}
+
+RULES:
+- A bare name (e.g. "rahul", "john") is likely user_info
+- A bare email is likely user_info
+- A bare phone number is likely user_info
+- A bare roll number is likely user_info
 
 ROLE: {role}
 
@@ -262,54 +431,77 @@ def _detect_intents_by_llm(message: str, user_role: str, client, model: str) -> 
             temperature=0.0,
             max_tokens=50,
         )
-        raw = response.choices[0].message.content
+        choice = response.choices[0]
+        raw = choice.message.content
         if not raw or not raw.strip():
-            logger.warning("[INTENT] LLM returned empty content")
-            return _ALWAYS_RELEVANT.copy()
+            # Some models put reasoning in reasoning_content and leave content empty
+            # Fall back to general intent
+            logger.warning(f"[INTENT] LLM returned empty content (finish_reason={choice.finish_reason})")
+            return {"general"}
         raw = raw.strip().lower()
         intents = set()
         for part in raw.split(","):
             part = part.strip().strip('"').strip("'")
             if part in INTENTS:
                 intents.add(part)
-        return intents if intents else _ALWAYS_RELEVANT.copy()
+        return intents if intents else {"general"}
     except Exception as e:
         logger.warning(f"[INTENT] LLM detection failed: {e}")
-        return _ALWAYS_RELEVANT.copy()
+        return {"general"}
 
 
 # ============================================================
 # PUBLIC API
 # ============================================================
 
-def detect_intents(message: str, user_role: str = None, client=None, model: str = None) -> set[str]:
+def detect_intents(message: str, user_role: str = None, client=None, model: str = None,
+                    history: list[dict] = None) -> set[str]:
     """
     Detect user intents from a message.
     
-    Uses keyword matching first (fast, free). Falls back to LLM if
-    no keywords match and LLM client is provided.
+    Detection priority:
+    1. Domain keyword matching (fast, free)
+    2. Follow-up pattern + history carryover
+    3. LLM fallback (when available)
+    4. General intent
     
     Always includes 'session' intent for context.
     """
+    # Step 1: Try domain keyword matching
     intents = _detect_intents_by_keywords(message)
-
-    # If keywords found something, use it
     if intents:
-        intents.add("session")  # Always include session for context
+        intents.add("session")
         logger.info(f"[INTENT] Keywords detected: {intents}")
         return intents
 
-    # Check fallback keywords for vague messages
+    # Step 2: Check if this is a follow-up reference
+    if _is_followup(message):
+        # Try to carry intent from conversation history
+        carried = _carry_intent_from_history(history)
+        if carried:
+            carried.add("session")
+            logger.info(f"[INTENT] Follow-up with history context: {carried}")
+            return carried
+        # No history context — use follow-up superset
+        followup_intents = {"followup", "session"}
+        logger.info(f"[INTENT] Follow-up without history context: using followup superset")
+        return followup_intents
+
+    # Step 3: Check fallback keywords (greetings, help)
     msg_lower = message.lower().strip()
-    for category, keywords in _FALLBACK_KEYWORDS.items():
+    for category in ["greeting", "help"]:
+        keywords = {
+            "greeting": ["hello", "hi", "hey", "good morning", "good evening",
+                         "how are you", "what's up", "sup", "yo"],
+            "help": ["help", "what can you do", "what do you do", "capabilities",
+                     "features", "options", "menu"],
+        }.get(category, [])
         for kw in keywords:
             if kw in msg_lower:
-                logger.info(f"[INTENT] Fallback matched: {category} (keyword: {kw})")
-                intents.add("session")
-                intents.add("general")
-                return intents  # Return minimal intents for greetings/help
+                logger.info(f"[INTENT] Fallback matched: {category}")
+                return {"session", "general"}
 
-    # Fallback to LLM if available
+    # Step 4: LLM fallback
     if client and model:
         logger.info("[INTENT] No keywords matched, using LLM fallback")
         intents = _detect_intents_by_llm(message, user_role, client, model)
@@ -317,7 +509,7 @@ def detect_intents(message: str, user_role: str = None, client=None, model: str 
         logger.info(f"[INTENT] LLM detected: {intents}")
         return intents
 
-    # No detection method available — return minimal context (session only)
+    # Step 5: Minimal context
     logger.info("[INTENT] No match, using minimal context")
     return _ALWAYS_RELEVANT.copy()
 
@@ -353,10 +545,5 @@ def get_relevant_tools(intents: set[str]) -> list[str]:
 
 
 def is_full_context_needed(intents: set[str]) -> bool:
-    """Check if the intents are too vague and full context is needed.
-    
-    Returns False for greetings/help (general intent) since they have
-    their own minimal tool set. Only returns True when detection completely
-    fails (empty intents).
-    """
+    """Check if full context is needed (empty intents)."""
     return len(intents) == 0

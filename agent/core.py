@@ -390,8 +390,9 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
     allowed_read = allowed["read"]
     allowed_write = allowed["write"]
 
-    # Step 1: Detect intent from user message
-    intents = detect_intents(message, user_role, client, OPENCODE_MODEL)
+    # Step 1: Detect intent from user message (with history context for follow-ups)
+    history = _load_history(user_id)
+    intents = detect_intents(message, user_role, client, OPENCODE_MODEL, history=history)
     use_filtered = not is_full_context_needed(intents)
 
     # Step 2: Fetch user context
@@ -423,8 +424,8 @@ def process_message(user_id: str, user_name: str, user_role: str, message: str) 
         active_tool_defs = TOOL_DEFINITIONS
         logger.info(f"[INTENT] Full mode: {len(TOOL_DEFINITIONS)} tools")
 
-    # Step 4: Load conversation history
-    history = _load_history(user_id)
+    # Step 4: Load conversation history (already loaded for intent detection)
+    # history was loaded in Step 1
 
     # Build messages
     messages = [{"role": "system", "content": system_prompt}]

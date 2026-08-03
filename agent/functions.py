@@ -2,6 +2,19 @@ from datetime import datetime
 from agent.db import get_collection
 from bson import ObjectId
 import time
+import logging
+
+logger = logging.getLogger("webhook")
+
+
+def _format_bytes(size: int) -> str:
+    """Format bytes to human readable string."""
+    if size < 1024:
+        return f"{size}B"
+    elif size < 1024 * 1024:
+        return f"{size / 1024:.1f}KB"
+    else:
+        return f"{size / (1024 * 1024):.1f}MB"
 
 # Simple in-memory cache: {cache_key: {"data": ..., "timestamp": float}}
 _CACHE: dict[str, dict] = {}
@@ -1079,6 +1092,19 @@ def list_announcements(user_id: str = None, user_role: str = None, page: int = 1
                 # Strip heavy arrays
                 item.pop("recipientStatuses", None)
                 item.pop("readBy", None)
+
+        # Add display index and attachment summary for each item
+        for idx, item in enumerate(items, 1):
+            item["displayIndex"] = idx
+            attachments = item.get("attachments", [])
+            item["attachmentCount"] = len(attachments)
+            if attachments:
+                item["attachmentSummary"] = ", ".join(
+                    f"{a.get('fileName', 'file')} ({_format_bytes(a.get('fileSizeBytes', 0))})"
+                    for a in attachments[:3]
+                )
+                if len(attachments) > 3:
+                    item["attachmentSummary"] += f" +{len(attachments) - 3} more"
 
         return {"items": _serialize(items), "total": total, "page": page, "pageSize": page_size}
     except Exception as e:
